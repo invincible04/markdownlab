@@ -1156,6 +1156,7 @@ body.is-focus .focus-exit { display: inline-flex; }
   position: relative;
   box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
 }
+.markdown-body pre:has(.code-lang) { padding-top: 38px; }
 .markdown-body pre::before {
   content: '';
   position: absolute;
@@ -1165,6 +1166,7 @@ body.is-focus .focus-exit { display: inline-flex; }
   border-radius: 2px;
   opacity: 0.45;
 }
+.markdown-body pre:has(.code-lang)::before { top: 38px; }
 .markdown-body pre code {
   font-family: var(--font-mono);
   background: transparent; padding: 0; border: 0;
@@ -1184,15 +1186,14 @@ body.is-focus .focus-exit { display: inline-flex; }
   border: 1px solid var(--border);
   padding: 2px 8px;
   border-radius: 999px;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity var(--t-base) var(--ease-out), transform var(--t-base) var(--ease-out), color var(--t-fast) var(--ease-out);
+  opacity: 0.6;
+  transition: opacity var(--t-base) var(--ease-out), color var(--t-fast) var(--ease-out);
   pointer-events: none;
   user-select: none;
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
-.markdown-body pre:hover .code-lang { opacity: 0.9; transform: translateY(0); }
+.markdown-body pre:hover .code-lang { opacity: 1; }
 
 /* Always visible (softer in idle, pops on hover) so touch users can see it. */
 .code-copy {

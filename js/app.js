@@ -54,6 +54,10 @@ const SCROLL_KEY     = 'mdlab.scroll.v1';
 const TOC_KEY        = 'mdlab.toc.v1';
 
 (function migrateOldKeys() {
+  const MIGRATION_FLAG = 'mdlab.migrated.v1';
+  try {
+    if (localStorage.getItem(MIGRATION_FLAG)) return;
+  } catch { return; }
   const pairs = [
     ['md-studio.doc.v1',   STORAGE_KEY],
     ['md-studio.theme.v1', THEME_KEY],
@@ -67,6 +71,7 @@ const TOC_KEY        = 'mdlab.toc.v1';
       if (v !== null && localStorage.getItem(to) === null) localStorage.setItem(to, v);
       if (v !== null) localStorage.removeItem(from);
     }
+    localStorage.setItem(MIGRATION_FLAG, '1');
   } catch {}
 })();
 
@@ -75,6 +80,7 @@ let toastTimer;
 let mermaidCounter = 0;
 let _anchorRebuildTimer;
 let _lastPreviewHtml = null;
+let _renderGen = 0;
 
 function debounce(fn, ms) {
   let t = 0;
@@ -131,7 +137,7 @@ async function waitForLibs() {
 }
 
 function setupMarked() {
-  marked.setOptions({ gfm: true, breaks: false, pedantic: false });
+  marked.setOptions({ gfm: true, breaks: true, pedantic: false });
 
   try {
     const ext = window.markedGfmHeadingId;
@@ -156,8 +162,12 @@ function setupMarked() {
         try {
           if (lang && hljs.getLanguage(lang)) {
             highlighted = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
-          } else {
+          } else if (code.length <= 4000) {
+            // highlightAuto tests every registered language; on large blocks
+            // it dominates render time and its heuristic is unreliable anyway.
             highlighted = hljs.highlightAuto(code).value;
+          } else {
+            highlighted = escapeHtml(code);
           }
         } catch {
           highlighted = escapeHtml(code);
@@ -322,23 +332,99 @@ function mermaidThemeVars(theme) {
     primaryColor: '#d1fae5',
     primaryTextColor: '#064e3b',
     primaryBorderColor: '#0d9488',
-    lineColor: '#475569',
     secondaryColor: '#f1f5f9',
+    secondaryTextColor: '#0f172a',
+    secondaryBorderColor: '#94a3b8',
     tertiaryColor: '#ffffff',
+    tertiaryTextColor: '#0f172a',
+    tertiaryBorderColor: '#cbd5e1',
+
     mainBkg: '#d1fae5',
     secondBkg: '#f1f5f9',
-    textColor: '#0f172a',
     nodeBorder: '#0d9488',
+    nodeTextColor: '#064e3b',
+    textColor: '#0f172a',
+    titleColor: '#0f172a',
+    labelTextColor: '#0f172a',
+
+    lineColor: '#475569',
+    edgeLabelBackground: '#ffffff',
+
     clusterBkg: '#f8fafc',
     clusterBorder: '#e2e8f0',
-    edgeLabelBackground: '#ffffff',
+
     actorBkg: '#d1fae5',
     actorBorder: '#0d9488',
     actorTextColor: '#064e3b',
     actorLineColor: '#475569',
+    signalColor: '#1e293b',
+    signalTextColor: '#0f172a',
+    labelBoxBkgColor: '#f1f5f9',
+    labelBoxBorderColor: '#94a3b8',
+    loopTextColor: '#0f172a',
     noteBkgColor: '#fef3c7',
     noteTextColor: '#0f172a',
     noteBorderColor: '#f59e0b',
+    activationBkgColor: '#10b981',
+    activationBorderColor: '#0d9488',
+
+    classText: '#0f172a',
+    stateBkg: '#d1fae5',
+    altBackground: '#f8fafc',
+
+    git0: '#0d9488', git1: '#0891b2', git2: '#7c3aed', git3: '#d97706',
+    git4: '#2563eb', git5: '#db2777', git6: '#dc2626', git7: '#14b8a6',
+    gitBranchLabel0: '#ffffff', gitBranchLabel1: '#ffffff',
+    gitBranchLabel2: '#ffffff', gitBranchLabel3: '#ffffff',
+    gitBranchLabel4: '#ffffff', gitBranchLabel5: '#ffffff',
+    gitBranchLabel6: '#ffffff', gitBranchLabel7: '#ffffff',
+    gitInv0: '#ffffff', gitInv1: '#ffffff', gitInv2: '#ffffff',
+    gitInv3: '#ffffff', gitInv4: '#ffffff', gitInv5: '#ffffff',
+    gitInv6: '#ffffff', gitInv7: '#ffffff',
+    commitLabelColor: '#0f172a',
+    commitLabelBackground: '#ffffff',
+    commitLabelFontSize: '12px',
+    tagLabelColor: '#0f172a',
+    tagLabelBackground: '#d1fae5',
+    tagLabelBorder: '#0d9488',
+
+    cScale0: '#0d9488', cScale1: '#0891b2', cScale2: '#0369a1',
+    cScale3: '#0284c7', cScale4: '#d97706', cScale5: '#7c3aed',
+    cScale6: '#dc2626', cScale7: '#16a34a',
+    cScaleLabel0: '#ffffff', cScaleLabel1: '#ffffff',
+    cScaleLabel2: '#ffffff', cScaleLabel3: '#ffffff',
+    cScaleLabel4: '#ffffff', cScaleLabel5: '#ffffff',
+    cScaleLabel6: '#ffffff', cScaleLabel7: '#ffffff',
+
+    pie1: '#0d9488', pie2: '#0891b2', pie3: '#2563eb', pie4: '#d97706',
+    pie5: '#db2777', pie6: '#dc2626', pie7: '#7c3aed', pie8: '#14b8a6',
+    pie9: '#ea580c', pie10: '#16a34a', pie11: '#ca8a04', pie12: '#9333ea',
+    pieTitleTextColor: '#0f172a',
+    pieSectionTextColor: '#ffffff',
+    pieLegendTextColor: '#0f172a',
+    pieStrokeColor: '#ffffff',
+
+    gridColor: '#e2e8f0',
+    taskBkgColor: '#10b981',
+    taskBorderColor: '#0d9488',
+    taskTextColor: '#ffffff',
+    taskTextDarkColor: '#0f172a',
+    taskTextLightColor: '#ffffff',
+    taskTextOutsideColor: '#0f172a',
+    taskTextClickableColor: '#ffffff',
+    activeTaskBkgColor: '#22d3ee',
+    activeTaskBorderColor: '#0891b2',
+    doneTaskBkgColor: '#cbd5e1',
+    doneTaskBorderColor: '#64748b',
+    critBkgColor: '#ef4444',
+    critBorderColor: '#b91c1c',
+    sectionBkgColor: '#f8fafc',
+    sectionBkgColor2: '#eef2f7',
+    altSectionBkgColor: '#ffffff',
+    todayLineColor: '#dc2626',
+    titleColor2: '#334155',
+    tickColor: '#64748b',
+    ganttFontSize: '12px',
   };
 }
 
@@ -352,10 +438,11 @@ function extractMath(src) {
   let i = 0;
 
   while (i < src.length) {
-    // Skip over fenced code blocks so $…$ inside stays literal
-    const fenceMatch = src.slice(i).match(/^([`~]{3,})([^\n]*)\n/);
+    // Skip over fenced code blocks so $…$ inside stays literal.
+    // CommonMark allows up to 3 spaces of indent before the fence marker.
+    const fenceMatch = src.slice(i).match(/^( {0,3})([`~]{3,})([^\n]*)\n/);
     if (fenceMatch && (i === 0 || src[i-1] === '\n')) {
-      const fence = fenceMatch[1];
+      const fence = fenceMatch[2];
       const close = src.indexOf('\n' + fence, i + fenceMatch[0].length);
       let end;
       if (close === -1) {
@@ -459,10 +546,15 @@ function reinjectMath(html, renders) {
 
 async function render() {
   const src = editor.value;
+  const gen = ++_renderGen;
   currentDoc.source = src;
   updateStats(src);
   persist();
-  sourceBlockLines = computeSourceBlockLines(src);
+  const nextBlockLines = computeSourceBlockLines(src);
+  const blockLinesChanged =
+    nextBlockLines.length !== sourceBlockLines.length ||
+    nextBlockLines.some((v, i) => v !== sourceBlockLines[i]);
+  sourceBlockLines = nextBlockLines;
 
   if (!src.trim()) {
     preview.innerHTML = emptyStateHtml();
@@ -502,17 +594,22 @@ async function render() {
     if (changed) {
       preview.innerHTML = clean;
       _lastPreviewHtml = clean;
-      await runMermaid();
+      await runMermaid(gen);
+      if (gen !== _renderGen) return;
       postProcess();
       buildToc();
     }
 
-    // Rebuild now (best-effort) plus once more after Mermaid/KaTeX inflation
-    // settles. ResizeObserver catches any later changes.
-    syncEditorMirror();
-    rebuildAnchorMap();
-    scheduleAnchorRebuild();
-    ensurePreviewObserver();
+    // On a no-op render (same sanitized HTML AND same source block structure),
+    // mirror + anchor maps are still valid — skip the O(N) rebuilds.
+    if (changed || blockLinesChanged) {
+      // Rebuild now (best-effort) plus once more after Mermaid/KaTeX inflation
+      // settles. ResizeObserver catches any later changes.
+      syncEditorMirror();
+      rebuildAnchorMap();
+      scheduleAnchorRebuild();
+      ensurePreviewObserver();
+    }
 
     statRender.textContent = `${(performance.now() - t0).toFixed(0)} ms`;
     setStatus('ready', 'Rendered');
@@ -537,7 +634,7 @@ function resetMermaidNodes(nodes) {
   });
 }
 
-async function runMermaid() {
+async function runMermaid(gen) {
   const nodes = preview.querySelectorAll('.mermaid');
   if (!nodes.length) return;
 
@@ -549,14 +646,19 @@ async function runMermaid() {
     console.warn('Mermaid run error:', err);
   }
 
-  nodes.forEach((el) => {
+  // If a newer render replaced preview.innerHTML while we were awaiting,
+  // the captured `nodes` are detached; bail rather than paint onto ghosts.
+  if (gen !== undefined && gen !== _renderGen) return;
+
+  const live = preview.querySelectorAll('.mermaid');
+  live.forEach((el) => {
     if (el.querySelector('svg')) return;
     const src = el.getAttribute('data-mermaid-src');
     el.classList.add('is-error');
     el.innerHTML = `<strong>Diagram error</strong><pre>${escapeHtml(src ? decodeURIComponent(src) : el.textContent)}</pre>`;
   });
 
-  nodes.forEach(attachDiagramControls);
+  live.forEach(attachDiagramControls);
 }
 
 function attachDiagramControls(el) {
@@ -638,6 +740,8 @@ const TOC_SCROLL_OFFSET_PX = 24;
 const TOC_LOCK_GRACE_MS = 220;
 
 let _tocHeadingsCache = [];
+let _tocHeadingTops = [];
+let _tocSignature = '';
 let _tocActiveId = null;
 // While non-null, scroll listeners must not change the active marker.
 let _tocScrollLock = null;
@@ -651,6 +755,16 @@ function buildToc() {
   const headings = Array.from(
     preview.querySelectorAll('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]')
   ).filter(h => !h.closest('.footnotes'));
+
+  // Skip the DOM rebuild when the heading set (id + level + text) is identical.
+  // Prevents tearing down the outline list on every keystroke that doesn't
+  // touch a heading — avoids screen-reader announcement churn and layout work.
+  const signature = headings.map(h => `${h.tagName}:${h.id}:${(h.textContent || '').replace(/\s+/g, ' ').trim()}`).join('|');
+  if (signature === _tocSignature && _tocHeadingsCache.length) {
+    _tocHeadingsCache = headings;
+    return;
+  }
+  _tocSignature = signature;
 
   // Preserve previous active id across re-renders to avoid flicker while typing.
   const prevActiveId = _tocActiveId;
@@ -710,6 +824,16 @@ function scheduleTocActiveUpdate() {
   });
 }
 
+// Snapshot heading offsetTops once per layout change; scroll handlers then
+// compare against previewWrap.scrollTop (zero layout cost) instead of reading
+// getBoundingClientRect() for every heading on every rAF tick.
+function rebuildTocHeadingTops() {
+  const headings = _tocHeadingsCache;
+  const tops = new Array(headings.length);
+  for (let i = 0; i < headings.length; i++) tops[i] = headings[i].offsetTop;
+  _tocHeadingTops = tops;
+}
+
 function updateActiveTocItem() {
   if (!toc || toc.dataset.empty === 'true') return;
   const headings = _tocHeadingsCache;
@@ -728,19 +852,21 @@ function updateActiveTocItem() {
     return;
   }
 
-  const wrapTop = previewWrap.getBoundingClientRect().top;
+  // Heading Y positions are cached (rebuildTocHeadingTops) so we don't
+  // thrash layout with per-heading getBoundingClientRect on every scroll frame.
+  const tops = _tocHeadingTops;
+  if (tops.length !== headings.length) rebuildTocHeadingTops();
 
-  let activeId = headings[0].id;
-  let scrolledPastAny = false;
-  for (const h of headings) {
-    const r = h.getBoundingClientRect();
-    if (r.top - wrapTop - TOC_ACTIVE_THRESHOLD_PX <= 0) {
-      activeId = h.id;
-      scrolledPastAny = true;
-    } else {
-      break;
-    }
+  const threshold = previewWrap.scrollTop + TOC_ACTIVE_THRESHOLD_PX;
+  // Binary search for the last heading whose top <= threshold.
+  let lo = 0, hi = _tocHeadingTops.length - 1, idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    if (_tocHeadingTops[mid] <= threshold) { idx = mid; lo = mid + 1; }
+    else hi = mid - 1;
   }
+  const scrolledPastAny = idx >= 0;
+  let activeId = scrolledPastAny ? headings[idx].id : headings[0].id;
 
   // Force last heading at bottom so trailing small headings still highlight.
   const atBottom = previewWrap.scrollTop + previewWrap.clientHeight >= previewWrap.scrollHeight - 4;
@@ -1098,7 +1224,17 @@ function inlineComputedStyles(liveRoot, cloneRoot) {
 //    replace them with native <text> before export.
 //  · Mermaid's class-based <style> rules don't survive the <img> load — we
 //    inline computed paint styles onto every element.
-//  · btoa can't handle multi-byte chars; fall back via encodeURIComponent.
+//  · btoa can't handle multi-byte chars; fall back via TextEncoder + chunked
+//    binary string conversion (avoids call-stack overflow on large SVGs).
+function bytesToBinaryString(bytes) {
+  let s = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return s;
+}
+
 async function downloadSvgAsPng(svg, filename) {
   const vb = svg.viewBox?.baseVal;
   const rect = svg.getBoundingClientRect();
@@ -1195,7 +1331,7 @@ async function downloadSvgAsPng(svg, filename) {
     img = await loadImg(blobUrl);
   } catch {
     try {
-      const b64 = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(xml))) : null;
+      const b64 = typeof btoa === 'function' ? btoa(bytesToBinaryString(new TextEncoder().encode(xml))) : null;
       if (!b64) throw new Error('Cannot base64-encode SVG');
       img = await loadImg(`data:image/svg+xml;base64,${b64}`);
     } catch (e) {
@@ -1333,10 +1469,13 @@ let scrollOwner = null;       // 'editor' | 'preview' | null — programmatic wr
 let scrollReleaseId = 0;
 function takeScroll(owner) {
   scrollOwner = owner;
-  clearTimeout(scrollReleaseId);
-  // Release quickly so a direction change isn't starved, but long enough to
-  // swallow the 1-2 scroll events our programmatic scrollTop write produces.
-  scrollReleaseId = setTimeout(() => { scrollOwner = null; }, 50);
+  if (scrollReleaseId) cancelAnimationFrame(scrollReleaseId);
+  // Release on the next frame — just enough to swallow the echo scroll event
+  // our programmatic scrollTop write fires. A 50ms timeout was starving fast
+  // trackpad flings when the user reversed direction mid-inertia.
+  scrollReleaseId = requestAnimationFrame(() => {
+    scrollReleaseId = requestAnimationFrame(() => { scrollOwner = null; });
+  });
 }
 
 let sourceBlockLines = [];
@@ -1375,6 +1514,14 @@ function computeSourceBlockLines(src) {
         if (lines[i].includes('$$')) { i++; break; }
         i++;
       }
+      continue;
+    }
+
+    // Skip footnote definitions — marked hoists these into a single .footnotes
+    // section at the bottom of the preview, so there's no 1:1 kid for them.
+    if (/^\[\^[^\]]+\]:/.test(line)) {
+      i++;
+      while (i < lines.length && lines[i].trim() !== '') i++;
       continue;
     }
 
@@ -1458,6 +1605,8 @@ function rebuildAnchorMap() {
   const endTop = Math.max(last?.top ?? 0, preview.scrollHeight);
   map.push({ line: Math.max(totalLines, last?.line ?? 0) + 1, top: endTop });
   anchorMap = map;
+  // Snapshot heading Ys while layout is fresh — the TOC's hot path reads these.
+  rebuildTocHeadingTops();
 }
 
 // Double rAF inside a debounce so Mermaid/KaTeX/image heights are final before
@@ -1493,6 +1642,17 @@ function ensurePreviewObserver() {
   _editorResizeObserver.observe(editor);
 }
 
+// Binary-search the anchor segment that brackets `key` on the given axis.
+// Anchors are monotonic in both `line` and `top`, so this is safe.
+function anchorSegment(key, axis) {
+  let lo = 0, hi = anchorMap.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (anchorMap[mid][axis] <= key) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
 function previewScrollForLine(line) {
   const max = Math.max(0, previewWrap.scrollHeight - previewWrap.clientHeight);
   if (anchorMap.length < 2) {
@@ -1506,14 +1666,10 @@ function previewScrollForLine(line) {
   }
   const end = anchorMap[anchorMap.length - 1];
   if (line >= end.line) return Math.max(0, Math.min(max, end.top));
-  for (let i = 0; i < anchorMap.length - 1; i++) {
-    const a = anchorMap[i], b = anchorMap[i + 1];
-    if (a.line <= line && b.line >= line) {
-      const t = (line - a.line) / (b.line - a.line || 1);
-      return Math.max(0, Math.min(max, a.top + t * (b.top - a.top)));
-    }
-  }
-  return 0;
+  const i = anchorSegment(line, 'line');
+  const a = anchorMap[i], b = anchorMap[i + 1];
+  const t = (line - a.line) / (b.line - a.line || 1);
+  return Math.max(0, Math.min(max, a.top + t * (b.top - a.top)));
 }
 
 function lineForPreviewScroll(scrollTop) {
@@ -1529,14 +1685,10 @@ function lineForPreviewScroll(scrollTop) {
   }
   const end = anchorMap[anchorMap.length - 1];
   if (scrollTop >= end.top) return end.line;
-  for (let i = 0; i < anchorMap.length - 1; i++) {
-    const a = anchorMap[i], b = anchorMap[i + 1];
-    if (a.top <= scrollTop && b.top >= scrollTop) {
-      const t = (scrollTop - a.top) / (b.top - a.top || 1);
-      return a.line + t * (b.line - a.line);
-    }
-  }
-  return 0;
+  const i = anchorSegment(scrollTop, 'top');
+  const a = anchorMap[i], b = anchorMap[i + 1];
+  const t = (scrollTop - a.top) / (b.top - a.top || 1);
+  return a.line + t * (b.line - a.line);
 }
 
 function syncGutterToEditor() {
@@ -1555,8 +1707,13 @@ function scheduleEditorToPreview() {
   requestAnimationFrame(() => {
     _editorSyncQueued = false;
     if (!scrollSyncEnabled || scrollOwner === 'preview') return;
+    const target = Math.round(previewScrollForLine(editorTopVisibleLine()));
+    // Skip sub-pixel/noop writes — each scrollTop assignment fires a native
+    // scroll event on the target pane, which re-enters this pipeline and
+    // can stutter native momentum scrolling.
+    if (Math.abs(target - previewWrap.scrollTop) < 1) return;
     takeScroll('editor');
-    previewWrap.scrollTop = previewScrollForLine(editorTopVisibleLine());
+    previewWrap.scrollTop = target;
   });
 }
 
@@ -1566,9 +1723,11 @@ function schedulePreviewToEditor() {
   requestAnimationFrame(() => {
     _previewSyncQueued = false;
     if (!scrollSyncEnabled || scrollOwner === 'editor') return;
-    takeScroll('preview');
     const line = lineForPreviewScroll(previewWrap.scrollTop);
-    editor.scrollTop = Math.max(0, editorTopOfLine(line) - _editorPadTop);
+    const target = Math.round(Math.max(0, editorTopOfLine(line) - _editorPadTop));
+    if (Math.abs(target - editor.scrollTop) < 1) return;
+    takeScroll('preview');
+    editor.scrollTop = target;
     syncGutterToEditor();
   });
 }
@@ -1651,7 +1810,6 @@ const persist = debounce(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       source: currentDoc.source,
       filename: currentDoc.filename,
-      savedAt: Date.now(),
     }));
     fileIndicator.textContent = `${currentDoc.filename} · autosaved`;
   } catch {
@@ -1867,6 +2025,8 @@ window.addEventListener('drop', async (e) => {
   if (f) await loadFile(f);
 });
 
+const MAX_AUTOSAVE_BYTES = 4 * 1024 * 1024; // ~4 MB — below typical 5 MB localStorage cap
+
 async function loadFile(file) {
   const ok = /\.(md|markdown|txt)$/i.test(file.name) || /text/.test(file.type);
   if (!ok) {
@@ -1879,7 +2039,11 @@ async function loadFile(file) {
     currentDoc.filename = file.name;
     updateGutter();
     scheduleRender();
-    showToast(`Loaded ${file.name}`, 'success');
+    if (new Blob([text]).size > MAX_AUTOSAVE_BYTES) {
+      showToast(`Loaded ${file.name} — too large to autosave; your work won't persist on refresh`, 'info');
+    } else {
+      showToast(`Loaded ${file.name}`, 'success');
+    }
   } catch {
     showToast(`Failed to read ${file.name}`, 'error');
   }
@@ -1892,7 +2056,7 @@ function buildExamplesMenu() {
     btn.className = 'dropdown__item';
     btn.setAttribute('role', 'menuitem');
     btn.innerHTML = `
-      <span style="font-size:18px;">${ex.icon}</span>
+      <span style="font-size:18px;">${escapeHtml(ex.icon)}</span>
       <div>
         <strong>${escapeHtml(ex.label)}</strong>
         <small>${escapeHtml(ex.description)}</small>
@@ -2066,7 +2230,7 @@ const PDF_CONTENT_W_PX = 794;
 const PDF_MARGIN_PX = 53;
 const PDF_BODY_W_PX = PDF_CONTENT_W_PX - PDF_MARGIN_PX * 2;
 const PDF_IFRAME_H_PX = 1123;
-const PDF_BUILD_TIMEOUT_MS = 60000;
+const PDF_BUILD_TIMEOUT_MS = 20000;
 const PDF_MAX_CANVAS_SIDE = 14000;
 const PDF_MSG_BLOB = 'mdlab-pdf-blob';
 const PDF_MSG_ERROR = 'mdlab-pdf-error';
@@ -2434,6 +2598,26 @@ const SHORTCUTS = [
   ]},
 ];
 
+function renderShortcutKeys(s) {
+  // Split only on " + " between two non-plus chars, so tokens like "+ / −"
+  // stay intact rather than being misread as the separator.
+  const parts = [];
+  let buf = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === ' ' && s[i + 1] === '+' && s[i + 2] === ' ' &&
+        buf.length > 0 && buf[buf.length - 1] !== '+' && buf[buf.length - 1] !== '−' &&
+        i + 3 < s.length && s[i + 3] !== '+' && s[i + 3] !== '−') {
+      parts.push(buf);
+      buf = '';
+      i += 2;
+      continue;
+    }
+    buf += s[i];
+  }
+  if (buf) parts.push(buf);
+  return parts.map(p => p === '⌘ / Ctrl' ? '<kbd>⌘</kbd>/<kbd>Ctrl</kbd>' : `<kbd>${p}</kbd>`).join(' + ');
+}
+
 function buildShortcutsOverlay() {
   if (document.getElementById('shortcuts-overlay')) return;
   const root = document.createElement('div');
@@ -2448,7 +2632,7 @@ function buildShortcutsOverlay() {
     <section class="shortcuts__group">
       <h3>${g.group}</h3>
       <dl>${g.items.map(([k, v]) =>
-        `<div><dt>${k.split(' + ').map(p => p === '⌘ / Ctrl' ? '<kbd>⌘</kbd>/<kbd>Ctrl</kbd>' : `<kbd>${p}</kbd>`).join(' + ')}</dt><dd>${v}</dd></div>`
+        `<div><dt>${renderShortcutKeys(k)}</dt><dd>${v}</dd></div>`
       ).join('')}</dl>
     </section>
   `).join('');
@@ -2486,4 +2670,6 @@ function toggleShortcuts() {
   else showShortcuts();
 }
 
-window.__mdlab = { render, editor, mermaid };
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:') {
+  window.__mdlab = { render, editor, mermaid };
+}

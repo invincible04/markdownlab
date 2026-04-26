@@ -193,6 +193,24 @@
           </span>
         </div>
         <div class="pane__meta">
+          <button
+            class="btn btn--ghost btn--mini pane__toggle"
+            id="btn-toc"
+            type="button"
+            aria-pressed="true"
+            aria-controls="toc"
+            title="Outline — table of contents (Ctrl/Cmd + L)"
+          >
+            <svg class="pane__toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="8" y1="6" x2="21" y2="6"/>
+              <line x1="8" y1="12" x2="21" y2="12"/>
+              <line x1="8" y1="18" x2="21" y2="18"/>
+              <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
+              <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+              <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
+            </svg>
+            <span class="pane__toggle-label">Outline</span>
+          </button>
           <label class="switch" title="Reading-focused typography">
             <input type="checkbox" id="toggle-prose" />
             <span class="switch__track"><span class="switch__thumb"></span></span>
@@ -200,8 +218,32 @@
           </label>
         </div>
       </div>
-      <div class="preview__wrap" id="preview-wrap">
-        <article class="preview markdown-body" id="preview" aria-live="polite"></article>
+      <div class="preview__layout">
+        <div class="preview__wrap" id="preview-wrap">
+          <article class="preview markdown-body" id="preview" aria-live="polite"></article>
+        </div>
+        <aside class="toc" id="toc" aria-label="Table of contents" data-empty="true">
+          <div class="toc__header">
+            <span class="toc__title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="8" y1="6" x2="21" y2="6"/>
+                <line x1="8" y1="12" x2="21" y2="12"/>
+                <line x1="8" y1="18" x2="21" y2="18"/>
+                <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
+                <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+                <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
+              </svg>
+              On this page
+            </span>
+            <button class="toc__close" id="btn-toc-close" type="button" aria-label="Hide outline" title="Hide outline">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <nav class="toc__nav" id="toc-nav" aria-label="Document outline"></nav>
+        </aside>
       </div>
     </section>
   </main>

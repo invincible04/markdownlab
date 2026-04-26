@@ -34,6 +34,11 @@ const statRender     = document.getElementById('stat-render');
 
 const examplesMenu   = document.getElementById('examples-menu');
 
+const toc            = document.getElementById('toc');
+const tocNav         = document.getElementById('toc-nav');
+const btnToc         = document.getElementById('btn-toc');
+const btnTocClose    = document.getElementById('btn-toc-close');
+
 const marked         = window.marked;
 const DOMPurify      = window.DOMPurify;
 const hljs           = window.hljs;
@@ -46,6 +51,7 @@ const SPLIT_KEY      = 'mdlab.split.v1';
 const PROSE_KEY      = 'mdlab.prose.v1';
 const SYNC_KEY       = 'mdlab.sync.v1';
 const SCROLL_KEY     = 'mdlab.scroll.v1';
+const TOC_KEY        = 'mdlab.toc.v1';
 
 (function migrateOldKeys() {
   const pairs = [
@@ -96,6 +102,7 @@ async function init() {
   restoreSplit();
   restoreProse();
   restoreSyncPref();
+  restoreTocPref();
   buildExamplesMenu();
   bindUI();
   registerKeyboardShortcuts();
@@ -469,6 +476,7 @@ async function render() {
       updateGutter();
       scheduleRender();
     });
+    buildToc();
     return;
   }
 
@@ -496,6 +504,7 @@ async function render() {
       _lastPreviewHtml = clean;
       await runMermaid();
       postProcess();
+      buildToc();
     }
 
     // Rebuild now (best-effort) plus once more after Mermaid/KaTeX inflation
@@ -566,6 +575,19 @@ function postProcess() {
   preview.querySelectorAll('pre > code').forEach((code) => {
     const pre = code.parentElement;
     if (pre.querySelector('.code-copy')) return;
+
+    // marked emits class="hljs language-<x>" — strip the prefix for display.
+    const langClass = Array.from(code.classList).find(c => c.startsWith('language-'));
+    if (langClass) {
+      const lang = langClass.slice('language-'.length);
+      if (lang && lang !== 'plaintext' && lang !== 'text') {
+        const badge = document.createElement('span');
+        badge.className = 'code-lang';
+        badge.textContent = lang;
+        pre.appendChild(badge);
+      }
+    }
+
     const btn = document.createElement('button');
     btn.className = 'code-copy';
     btn.type = 'button';
@@ -585,11 +607,13 @@ function postProcess() {
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
     }
-    if (href.startsWith('#')) {
+    if (href.startsWith('#') && href.length > 1) {
       a.addEventListener('click', (e) => {
+        const id = href.slice(1);
+        const target = preview.querySelector(`#${cssEscape(id)}`);
+        if (!target) return;
         e.preventDefault();
-        const el = document.getElementById(href.slice(1));
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scrollPreviewToHeading(target);
       });
     }
   });
@@ -604,6 +628,308 @@ function postProcess() {
     wrap.appendChild(t);
   });
 }
+
+// ---------- Table of contents ----------
+
+const TOC_ACTIVE_THRESHOLD_PX = 88;
+// Clears pane__header (40px) plus breathing room.
+const TOC_SCROLL_OFFSET_PX = 24;
+// Covers late layout shifts (Mermaid/images settling) after a scroll.
+const TOC_LOCK_GRACE_MS = 220;
+
+let _tocHeadingsCache = [];
+let _tocActiveId = null;
+// While non-null, scroll listeners must not change the active marker.
+let _tocScrollLock = null;
+let _tocScrollAnimId = 0;
+let _tocScrollAbortController = null;
+let _tocUpdateQueued = false;
+
+function buildToc() {
+  if (!toc || !tocNav) return;
+
+  const headings = Array.from(
+    preview.querySelectorAll('h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]')
+  ).filter(h => !h.closest('.footnotes'));
+
+  // Preserve previous active id across re-renders to avoid flicker while typing.
+  const prevActiveId = _tocActiveId;
+  _tocHeadingsCache = headings;
+
+  if (!headings.length) {
+    tocNav.replaceChildren();
+    toc.dataset.empty = 'true';
+    _tocActiveId = null;
+    return;
+  }
+  toc.dataset.empty = 'false';
+
+  // Normalize so the shallowest heading in the doc becomes depth 1.
+  const minLevel = Math.min(...headings.map(h => Number(h.tagName[1])));
+
+  const list = document.createElement('ul');
+  list.className = 'toc__list';
+
+  for (const h of headings) {
+    const level = Number(h.tagName[1]);
+    const depth = Math.min(6, level - minLevel + 1);
+
+    const li = document.createElement('li');
+    li.className = `toc__item toc__item--l${depth}`;
+
+    const a = document.createElement('a');
+    a.className = 'toc__link';
+    a.href = `#${h.id}`;
+    a.dataset.id = h.id;
+    const label = (h.textContent || '').replace(/\s+/g, ' ').trim();
+    a.textContent = label;
+    a.title = label;
+
+    li.appendChild(a);
+    list.appendChild(li);
+  }
+
+  tocNav.replaceChildren(list);
+
+  if (prevActiveId && headings.some(h => h.id === prevActiveId)) {
+    const stillActive = tocNav.querySelector(`.toc__link[data-id="${cssEscape(prevActiveId)}"]`);
+    if (stillActive) stillActive.classList.add('is-active');
+  } else {
+    _tocActiveId = null;
+  }
+
+  scheduleTocActiveUpdate();
+}
+
+function scheduleTocActiveUpdate() {
+  if (_tocUpdateQueued) return;
+  _tocUpdateQueued = true;
+  requestAnimationFrame(() => {
+    _tocUpdateQueued = false;
+    updateActiveTocItem();
+  });
+}
+
+function updateActiveTocItem() {
+  if (!toc || toc.dataset.empty === 'true') return;
+  const headings = _tocHeadingsCache;
+  if (!headings.length) return;
+
+  // While a TOC-click scroll is in flight, pin to the clicked heading so
+  // the highlight doesn't flicker through every heading we pass.
+  if (_tocScrollLock) {
+    const stillExists = headings.some(h => h.id === _tocScrollLock.id);
+    if (stillExists && _tocActiveId !== _tocScrollLock.id) {
+      _tocActiveId = _tocScrollLock.id;
+      tocNav.querySelectorAll('.toc__link').forEach(link => {
+        link.classList.toggle('is-active', link.dataset.id === _tocScrollLock.id);
+      });
+    }
+    return;
+  }
+
+  const wrapTop = previewWrap.getBoundingClientRect().top;
+
+  let activeId = headings[0].id;
+  let scrolledPastAny = false;
+  for (const h of headings) {
+    const r = h.getBoundingClientRect();
+    if (r.top - wrapTop - TOC_ACTIVE_THRESHOLD_PX <= 0) {
+      activeId = h.id;
+      scrolledPastAny = true;
+    } else {
+      break;
+    }
+  }
+
+  // Force last heading at bottom so trailing small headings still highlight.
+  const atBottom = previewWrap.scrollTop + previewWrap.clientHeight >= previewWrap.scrollHeight - 4;
+  if (atBottom) activeId = headings[headings.length - 1].id;
+
+  if (!scrolledPastAny && previewWrap.scrollTop < 4) {
+    activeId = null;
+  }
+
+  if (activeId === _tocActiveId) return;
+  _tocActiveId = activeId;
+
+  let activeLink = null;
+  tocNav.querySelectorAll('.toc__link').forEach(link => {
+    const on = activeId !== null && link.dataset.id === activeId;
+    link.classList.toggle('is-active', on);
+    if (on) activeLink = link;
+  });
+
+  if (activeLink) keepTocLinkVisible(activeLink);
+}
+
+function keepTocLinkVisible(link) {
+  const navRect = tocNav.getBoundingClientRect();
+  const linkRect = link.getBoundingClientRect();
+  const margin = 24;
+  if (linkRect.top < navRect.top + margin) {
+    tocNav.scrollBy({ top: linkRect.top - navRect.top - margin, behavior: 'smooth' });
+  } else if (linkRect.bottom > navRect.bottom - margin) {
+    tocNav.scrollBy({ top: linkRect.bottom - navRect.bottom + margin, behavior: 'smooth' });
+  }
+}
+
+// rAF-driven so we get a completion signal (native smooth scroll doesn't),
+// letting us re-measure once the scroll settles.
+function smoothScrollTo(el, top, { duration = 360, signal } = {}) {
+  cancelAnimationFrame(_tocScrollAnimId);
+  _tocScrollAnimId = 0;
+  return new Promise((resolve) => {
+    const start = el.scrollTop;
+    const distance = Math.round(top) - start;
+    if (Math.abs(distance) < 1) { el.scrollTop = Math.round(top); resolve(); return; }
+    if (signal?.aborted) { resolve(); return; }
+
+    const startTime = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+
+    const onAbort = () => { cancelAnimationFrame(_tocScrollAnimId); _tocScrollAnimId = 0; resolve(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    const tick = (now) => {
+      if (signal?.aborted) { resolve(); return; }
+      const t = Math.min(1, (now - startTime) / duration);
+      el.scrollTop = start + distance * ease(t);
+      if (t < 1) {
+        _tocScrollAnimId = requestAnimationFrame(tick);
+      } else {
+        el.scrollTop = Math.round(top);
+        _tocScrollAnimId = 0;
+        resolve();
+      }
+    };
+    _tocScrollAnimId = requestAnimationFrame(tick);
+  });
+}
+
+function targetScrollTopForHeading(heading) {
+  const wrapTop = previewWrap.getBoundingClientRect().top;
+  const headingTop = heading.getBoundingClientRect().top;
+  const max = Math.max(0, previewWrap.scrollHeight - previewWrap.clientHeight);
+  const desired = previewWrap.scrollTop + headingTop - wrapTop - TOC_SCROLL_OFFSET_PX;
+  return Math.max(0, Math.min(max, desired));
+}
+
+async function scrollPreviewToHeading(heading, { pinTocLink = null } = {}) {
+  if (!heading) return;
+  const id = heading.id;
+  if (!id) return;
+
+  if (_tocScrollAbortController) _tocScrollAbortController.abort();
+  _tocScrollAbortController = new AbortController();
+  const { signal } = _tocScrollAbortController;
+
+  if (_tocHeadingsCache.some(h => h.id === id)) {
+    _tocScrollLock = { id };
+    tocNav?.querySelectorAll('.toc__link.is-active').forEach(l => l.classList.remove('is-active'));
+    const link = pinTocLink || tocNav?.querySelector(`.toc__link[data-id="${cssEscape(id)}"]`);
+    if (link) {
+      link.classList.add('is-active');
+      _tocActiveId = id;
+      keepTocLinkVisible(link);
+    }
+  }
+
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const target = targetScrollTopForHeading(heading);
+  if (reduceMotion) {
+    previewWrap.scrollTop = target;
+  } else {
+    await smoothScrollTo(previewWrap, target, { duration: 360, signal });
+    if (signal.aborted) return;
+
+    // Re-resolve in case the DOM was replaced by a render mid-scroll.
+    let liveHeading = heading;
+    if (!liveHeading.isConnected) {
+      liveHeading = preview.querySelector(`#${cssEscape(id)}`);
+      if (!liveHeading) { _tocScrollLock = null; _tocScrollAbortController = null; return; }
+    }
+
+    // Layout may have shifted (Mermaid/images settling) — nudge to corrected position.
+    const corrected = targetScrollTopForHeading(liveHeading);
+    if (Math.abs(corrected - previewWrap.scrollTop) > 2) {
+      await smoothScrollTo(previewWrap, corrected, { duration: 180, signal });
+      if (signal.aborted) return;
+    }
+  }
+
+  // Grace period: final snap-correct after any late layout settling.
+  setTimeout(() => {
+    if (_tocScrollLock?.id !== id) return;
+    const live = heading.isConnected ? heading : preview.querySelector(`#${cssEscape(id)}`);
+    if (live) {
+      const finalTop = targetScrollTopForHeading(live);
+      if (Math.abs(finalTop - previewWrap.scrollTop) > 2) {
+        previewWrap.scrollTop = finalTop;
+      }
+    }
+    _tocScrollLock = null;
+    _tocScrollAbortController = null;
+    scheduleTocActiveUpdate();
+  }, TOC_LOCK_GRACE_MS);
+}
+
+tocNav?.addEventListener('click', (e) => {
+  const link = e.target.closest('.toc__link');
+  if (!link) return;
+  e.preventDefault();
+  const id = link.dataset.id;
+  if (!id) return;
+  const heading = preview.querySelector(`#${cssEscape(id)}`);
+  scrollPreviewToHeading(heading, { pinTocLink: link });
+});
+
+// Abort programmatic scroll on user input. `keydown` is intentionally omitted
+// so editor keystrokes don't kill an in-flight TOC jump.
+['wheel', 'touchstart', 'pointerdown'].forEach((ev) => {
+  previewWrap?.addEventListener(ev, () => {
+    if (_tocScrollAbortController) {
+      _tocScrollAbortController.abort();
+      _tocScrollAbortController = null;
+      _tocScrollLock = null;
+    }
+  }, { passive: true });
+});
+
+// Fallback for browsers without CSS.escape.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/([^\w-])/g, '\\$1');
+}
+
+function applyTocToggle(visible, { silent = false } = {}) {
+  if (!toc) return;
+  const on = !!visible;
+  toc.dataset.collapsed = on ? 'false' : 'true';
+  if (btnToc) {
+    btnToc.setAttribute('aria-pressed', String(on));
+    btnToc.title = on
+      ? 'Outline is on — click to hide (Ctrl/Cmd + L)'
+      : 'Outline is off — click to show (Ctrl/Cmd + L)';
+    const label = btnToc.querySelector('.pane__toggle-label');
+    if (label) label.textContent = on ? 'Outline' : 'Outline off';
+  }
+  try { localStorage.setItem(TOC_KEY, on ? '1' : '0'); } catch {}
+  if (on) scheduleTocActiveUpdate();
+  if (!silent) showToast(on ? 'Outline on' : 'Outline off', 'info');
+}
+
+function restoreTocPref() {
+  if (!toc) return;
+  const raw = localStorage.getItem(TOC_KEY);
+  applyTocToggle(raw === null ? true : raw === '1', { silent: true });
+}
+
+btnToc?.addEventListener('click', () => {
+  const isOn = toc.dataset.collapsed !== 'true';
+  applyTocToggle(!isOn);
+});
+btnTocClose?.addEventListener('click', () => applyTocToggle(false));
 
 // Pan + zoom viewer for Mermaid SVGs
 const lightbox = {
@@ -969,6 +1295,7 @@ window.addEventListener('resize', () => {
   if (lightbox.root.classList.contains('is-open')) fitLightbox();
   syncEditorMirror();
   scheduleAnchorRebuild();
+  scheduleTocActiveUpdate();
 });
 
 const scheduleRender = debounce(render, 120);
@@ -1255,6 +1582,7 @@ editor.addEventListener('scroll', () => {
 previewWrap.addEventListener('scroll', () => {
   schedulePreviewToEditor();
   schedulePersistScroll();
+  scheduleTocActiveUpdate();
 }, { passive: true });
 
 function writeScrollState() {
@@ -1664,7 +1992,7 @@ async function exportHtml() {
   const theme = document.documentElement.getAttribute('data-theme') || 'dark';
   const temp = document.createElement('div');
   temp.innerHTML = preview.innerHTML;
-  temp.querySelectorAll('.code-copy, .diagram-expand').forEach(el => el.remove());
+  temp.querySelectorAll('.code-copy, .code-lang, .diagram-expand').forEach(el => el.remove());
   const bodyHtml = temp.innerHTML;
   const html = `<!doctype html>
 <html lang="en" data-theme="${theme}">
@@ -1800,7 +2128,7 @@ function buildPdfSourceHtml(bodyInnerHtml, title) {
   const temp = document.createElement('div');
   temp.innerHTML = bodyInnerHtml;
   resetMermaidNodes(temp.querySelectorAll('.mermaid'));
-  temp.querySelectorAll('.code-copy, .diagram-expand').forEach(el => el.remove());
+  temp.querySelectorAll('.code-copy, .code-lang, .diagram-expand').forEach(el => el.remove());
   temp.querySelectorAll('.table-wrap').forEach(w => {
     const t = w.querySelector('table');
     if (t) w.replaceWith(t);
@@ -2014,6 +2342,12 @@ function registerKeyboardShortcuts() {
     if (e.key === 's' || e.key === 'S') { e.preventDefault(); exportMd(); return; }
     if (e.key === 'o' || e.key === 'O') { e.preventDefault(); fileInput.click(); return; }
     if (e.key === '/') { e.preventDefault(); toggleShortcuts(); return; }
+    if (e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      const isOn = toc?.dataset.collapsed !== 'true';
+      applyTocToggle(!isOn);
+      return;
+    }
   });
 }
 
@@ -2084,6 +2418,7 @@ const SHORTCUTS = [
   ]},
   { group: 'Document', items: [
     ['⌘ / Ctrl + K', 'Toggle theme'],
+    ['⌘ / Ctrl + L', 'Toggle outline'],
     ['⌘ / Ctrl + O', 'Open .md file'],
     ['⌘ / Ctrl + S', 'Download markdown'],
     ['⌘ / Ctrl + /', 'Show shortcuts'],

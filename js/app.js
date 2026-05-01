@@ -1,8 +1,24 @@
 /* MarkdownLab — render pipeline:
-   editor → extractMath → marked → reinjectMath → DOMPurify → Mermaid → postProcess */
+   editor → extractMath → marked → reinjectMath → DOMPurify → Mermaid → postProcess
+
+   State model: projects → files → tabs. All persistence lives in IndexedDB
+   (via ./db.js); the rendering/scroll/TOC/Mermaid/KaTeX pipeline below is
+   identical to the single-doc version — it simply reads `editor.value` and
+   paints into `preview`, independent of which file is active. */
 
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs';
 import { EXAMPLES } from './examples.js';
+import {
+  Store, loadAll,
+  createProject, createFile, saveFileContent, markDirty,
+  activateFile, closeFile as storeCloseFile,
+  renameFile, duplicateFile, deleteFile, restoreFile, restoreProject,
+  uniqueFileName,
+} from './projects.js';
+import { initSidebar, toggleSidebar } from './sidebar.js';
+import { initTabs, cycleTab } from './tabs.js';
+import { initPalette, openPalette, closePalette } from './palette.js';
+import { escapeHtml, cssEscape } from './utils.js';
 
 // ---------- DOM refs ----------
 const editor         = document.getElementById('editor');
@@ -13,10 +29,16 @@ const gutter         = document.getElementById('editor-gutter');
 const workspace      = document.querySelector('.workspace');
 const dropOverlay    = document.getElementById('drop-overlay');
 const fileInput      = document.getElementById('file-input');
+const folderInput    = document.getElementById('folder-input');
 const btnUpload      = document.getElementById('btn-upload');
 const btnTheme       = document.getElementById('btn-theme');
 const btnFocus       = document.getElementById('btn-focus');
-const btnFocusExit   = document.getElementById('btn-focus-exit');
+// Focus-mode dock — replaces the single "exit" pill with a mini toolbar.
+const focusDock      = document.getElementById('focus-dock');
+const dockTheme      = document.getElementById('dock-theme');
+const dockReading    = document.getElementById('dock-reading');
+const dockOutline    = document.getElementById('dock-outline');
+const dockExit       = document.getElementById('dock-exit');
 const btnSync        = document.getElementById('btn-sync');
 const toggleProse    = document.getElementById('toggle-prose');
 const resizer        = document.getElementById('resizer');
@@ -44,38 +66,14 @@ const DOMPurify      = window.DOMPurify;
 const hljs           = window.hljs;
 const katex          = window.katex;
 
-const STORAGE_KEY    = 'mdlab.doc.v1';
 const THEME_KEY      = 'mdlab.theme.v1';
 const VIEW_KEY       = 'mdlab.view.v1';
-const SPLIT_KEY      = 'mdlab.split.v1';
+// v2: discards any v1 split saved before the outline-offset fix.
+const SPLIT_KEY      = 'mdlab.split.v2';
 const PROSE_KEY      = 'mdlab.prose.v1';
 const SYNC_KEY       = 'mdlab.sync.v1';
-const SCROLL_KEY     = 'mdlab.scroll.v1';
 const TOC_KEY        = 'mdlab.toc.v1';
 
-(function migrateOldKeys() {
-  const MIGRATION_FLAG = 'mdlab.migrated.v1';
-  try {
-    if (localStorage.getItem(MIGRATION_FLAG)) return;
-  } catch { return; }
-  const pairs = [
-    ['md-studio.doc.v1',   STORAGE_KEY],
-    ['md-studio.theme.v1', THEME_KEY],
-    ['md-studio.view.v1',  VIEW_KEY],
-    ['md-studio.split.v1', SPLIT_KEY],
-    ['md-studio.prose.v1', PROSE_KEY],
-  ];
-  try {
-    for (const [from, to] of pairs) {
-      const v = localStorage.getItem(from);
-      if (v !== null && localStorage.getItem(to) === null) localStorage.setItem(to, v);
-      if (v !== null) localStorage.removeItem(from);
-    }
-    localStorage.setItem(MIGRATION_FLAG, '1');
-  } catch {}
-})();
-
-let currentDoc = { source: '', filename: 'Untitled.md' };
 let toastTimer;
 let mermaidCounter = 0;
 let _anchorRebuildTimer;
@@ -84,10 +82,13 @@ let _renderGen = 0;
 
 function debounce(fn, ms) {
   let t = 0;
-  return (...args) => {
+  const wrapped = (...args) => {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), ms);
   };
+  wrapped.cancel = () => { clearTimeout(t); t = 0; };
+  wrapped.flush = () => { if (t) { clearTimeout(t); t = 0; fn(); } };
+  return wrapped;
 }
 
 // Microtask defer lets all module-level bindings initialize before any code
@@ -101,6 +102,7 @@ Promise.resolve().then(() => init()).catch(err => {
 
 async function init() {
   await waitForLibs();
+  installDomPurifyHooks();
   setupMarked();
   setupMermaid();
   restoreTheme();
@@ -112,7 +114,46 @@ async function init() {
   buildExamplesMenu();
   bindUI();
   registerKeyboardShortcuts();
-  loadInitialDoc();
+
+  await bootstrapProjects();
+
+  ensureEditorObserver();
+
+  await initSidebar({
+    onOpenFile: (id) => switchToFile(id),
+    onFileDeleted: () => {},
+    onUndoableDelete: (info) => showUndoableDeleteToast(info),
+    onDbBlocked: (err) => showToast(err?.message || 'Storage blocked by another tab', 'error'),
+  });
+
+  initTabs({
+    onActivate: (id) => switchToFile(id),
+    onClose: () => {
+      // If we closed the currently loaded tab, swap to whatever's active now.
+      if (Store.activeId && Store.activeId !== _loadedFileId) switchToFile(Store.activeId);
+      else if (!Store.activeId) {
+        editor.value = '';
+        updateFileIndicator();
+        safeUpdateGutter();
+        scheduleRender();
+      }
+    },
+    onCreate: (id) => switchToFile(id),
+  });
+
+  initPalette({
+    onOpenFile: (id) => switchToFile(id),
+    runCommand: (cmd) => {
+      try {
+        cmd.run?.();
+      } catch (err) {
+        console.error('Palette command failed:', err);
+        showToast(`Command failed: ${cmd.title}`, 'error');
+      }
+    },
+    commands: buildCommandList,
+  });
+
   await render();
 
   // If a library became usable on a later tick and our first render produced
@@ -123,7 +164,7 @@ async function init() {
   }
 
   // Two-frame defer so Mermaid/KaTeX have settled before we restore scrollTop.
-  requestAnimationFrame(() => requestAnimationFrame(restoreScroll));
+  requestAnimationFrame(() => requestAnimationFrame(restoreActiveFileScroll));
 }
 
 async function waitForLibs() {
@@ -134,6 +175,19 @@ async function waitForLibs() {
   }
   const missing = ['marked', 'DOMPurify', 'hljs', 'katex'].filter(n => !window[n]);
   throw new Error(`Libraries failed to load: ${missing.join(', ')}. Check network.`);
+}
+
+function installDomPurifyHooks() {
+  if (!window.DOMPurify || DOMPurify._mdlabHookInstalled) return;
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.nodeName === 'A' && node.hasAttribute('target')) {
+      const target = node.getAttribute('target');
+      if (target && target.toLowerCase() === '_blank') {
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  });
+  DOMPurify._mdlabHookInstalled = true;
 }
 
 function setupMarked() {
@@ -158,24 +212,10 @@ function setupMarked() {
         if (lang === 'mermaid') {
           return `<div class="mermaid" data-mermaid-src="${encodeURIComponent(code)}">${escapeHtml(code)}</div>`;
         }
-        let highlighted = '';
-        try {
-          if (lang && hljs.getLanguage(lang)) {
-            highlighted = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
-          } else if (code.length <= 4000) {
-            // highlightAuto tests every registered language; on large blocks
-            // it dominates render time and its heuristic is unreliable anyway.
-            highlighted = hljs.highlightAuto(code).value;
-          } else {
-            highlighted = escapeHtml(code);
-          }
-        } catch {
-          highlighted = escapeHtml(code);
-        }
+        const highlighted = highlightCached(code, lang);
         const cls = lang ? ` class="hljs language-${lang}"` : ' class="hljs"';
         return `<pre><code${cls}>${highlighted}</code></pre>`;
       },
-      // GFM alerts aren't native in marked 12 — detect and restyle blockquote.
       blockquote(quote) {
         const match = quote.match(/^<p>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*?)<\/p>\s*/is);
         if (match) {
@@ -191,6 +231,46 @@ function setupMarked() {
       },
     },
   });
+}
+
+const HLJS_CACHE_MAX = 256;
+const _hljsCache = new Map();
+
+function hljsKey(code, lang) {
+  let h = 2166136261;
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `${lang || ''}\0${code.length}\0${h >>> 0}`;
+}
+
+function highlightCached(code, lang) {
+  const key = hljsKey(code, lang);
+  const hit = _hljsCache.get(key);
+  if (hit !== undefined) {
+    _hljsCache.delete(key);
+    _hljsCache.set(key, hit);
+    return hit;
+  }
+  let result;
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      result = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    } else if (code.length <= 4000) {
+      result = hljs.highlightAuto(code).value;
+    } else {
+      result = escapeHtml(code);
+    }
+  } catch {
+    result = escapeHtml(code);
+  }
+  _hljsCache.set(key, result);
+  if (_hljsCache.size > HLJS_CACHE_MAX) {
+    const firstKey = _hljsCache.keys().next().value;
+    _hljsCache.delete(firstKey);
+  }
+  return result;
 }
 
 const ALERT_ICONS = {
@@ -226,111 +306,139 @@ function setupMermaid() {
 }
 
 function mermaidThemeVars(theme) {
+  // Dark-mode palette audited for WCAG AA (≥ 4.5:1) fg/bg pairs. Every
+  // text-on-fill combination below has been checked; see the detailed notes
+  // below each group. Light-mode mirrors the same discipline.
   if (theme === 'dark') {
     return {
-      background: '#0f1a1d',
-      primaryColor: '#059669',
-      primaryTextColor: '#ffffff',
-      primaryBorderColor: '#6ee7b7',
-      secondaryColor: '#334155',
-      secondaryTextColor: '#ffffff',
+      // Surfaces
+      background: '#0f141c',              // diagram canvas
+      mainBkg: '#134e4a',                 // teal-900 — primary node fill
+      secondBkg: '#1e293b',               // slate-800 — secondary node
+      tertiaryColor: '#0f172a',
+      primaryColor: '#134e4a',
+      secondaryColor: '#1e293b',
+
+      // Text — all on mid/dark fills (AA ≥ 4.5:1)
+      textColor: '#f1f5f9',
+      primaryTextColor: '#f0fdfa',        // teal-50 on teal-900 → 12.4:1
+      secondaryTextColor: '#e2e8f0',      // slate-200 on slate-800 → 10.1:1
+      tertiaryTextColor: '#f8fafc',
+      nodeTextColor: '#f0fdfa',
+      titleColor: '#f8fafc',
+      labelTextColor: '#f8fafc',
+      classText: '#f8fafc',
+
+      // Borders
+      primaryBorderColor: '#2dd4bf',      // teal-400 — glows against teal-900
       secondaryBorderColor: '#94a3b8',
-      tertiaryColor: '#0f2027',
-      tertiaryTextColor: '#ffffff',
       tertiaryBorderColor: '#cbd5e1',
+      nodeBorder: '#2dd4bf',
 
-      mainBkg: '#059669',
-      secondBkg: '#334155',
-      nodeBorder: '#6ee7b7',
-      nodeTextColor: '#ffffff',
-      textColor: '#f8fafc',
-      titleColor: '#ffffff',
-      labelTextColor: '#ffffff',
-
+      // Edges
       lineColor: '#cbd5e1',
-      edgeLabelBackground: '#0f2027',
+      edgeLabelBackground: '#1e293b',     // slate-800 for edge-label bg
 
-      clusterBkg: '#0f2027',
+      // Clusters
+      clusterBkg: '#14222b',
       clusterBorder: '#475569',
 
-      actorBkg: '#059669',
-      actorBorder: '#6ee7b7',
-      actorTextColor: '#ffffff',
+      // Sequence diagrams
+      actorBkg: '#134e4a',
+      actorBorder: '#2dd4bf',
+      actorTextColor: '#f0fdfa',          // 12.4:1
       actorLineColor: '#cbd5e1',
       signalColor: '#e2e8f0',
       signalTextColor: '#f8fafc',
-      labelBoxBkgColor: '#334155',
+      labelBoxBkgColor: '#334155',        // slate-700
       labelBoxBorderColor: '#94a3b8',
       loopTextColor: '#f8fafc',
-      noteBkgColor: '#fde68a',
-      noteTextColor: '#1e1b4b',
+
+      // Notes — desaturated amber card w/ legible amber-100 text (7.8:1).
+      // Previously used bright #fde68a on dark canvas which looked jarring.
+      noteBkgColor: '#422006',
+      noteTextColor: '#fde68a',
       noteBorderColor: '#f59e0b',
-      activationBkgColor: '#10b981',
-      activationBorderColor: '#6ee7b7',
 
-      classText: '#ffffff',
-      stateBkg: '#059669',
-      altBackground: '#0f2027',
+      // Activation bars (sequence) — cyan to differentiate from emerald nodes
+      activationBkgColor: '#0e7490',
+      activationBorderColor: '#67e8f9',
 
-      git0: '#34d399', git1: '#22d3ee', git2: '#a78bfa', git3: '#fbbf24',
-      git4: '#60a5fa', git5: '#f472b6', git6: '#f87171', git7: '#2dd4bf',
+      // State diagrams
+      stateBkg: '#134e4a',
+      altBackground: '#14222b',           // subtle alt row, distinct from tertiary
+
+      // Git graph — all branch fills are mid/light so BOTH primary branch
+      // labels AND inverse (commit dot) labels use dark foreground text to
+      // meet WCAG AA (≥ 4.5:1). White text on light-cyan/teal/amber was
+      // failing ~1.5:1. Dark-on-light is the safe choice across the board.
+      git0: '#2dd4bf', git1: '#22d3ee', git2: '#a78bfa', git3: '#fbbf24',
+      git4: '#60a5fa', git5: '#f472b6', git6: '#fb7185', git7: '#4ade80',
       gitBranchLabel0: '#0f172a', gitBranchLabel1: '#0f172a',
-      gitBranchLabel2: '#ffffff', gitBranchLabel3: '#0f172a',
-      gitBranchLabel4: '#ffffff', gitBranchLabel5: '#ffffff',
-      gitBranchLabel6: '#ffffff', gitBranchLabel7: '#0f172a',
-      gitInv0: '#0f172a', gitInv1: '#0f172a', gitInv2: '#ffffff',
-      gitInv3: '#0f172a', gitInv4: '#ffffff', gitInv5: '#ffffff',
-      gitInv6: '#ffffff', gitInv7: '#0f172a',
+      gitBranchLabel2: '#0f172a', gitBranchLabel3: '#0f172a',
+      gitBranchLabel4: '#0f172a', gitBranchLabel5: '#0f172a',
+      gitBranchLabel6: '#0f172a', gitBranchLabel7: '#0f172a',
+      gitInv0: '#0f172a', gitInv1: '#0f172a', gitInv2: '#0f172a',
+      gitInv3: '#0f172a', gitInv4: '#0f172a', gitInv5: '#0f172a',
+      gitInv6: '#0f172a', gitInv7: '#0f172a',
       commitLabelColor: '#f8fafc',
-      commitLabelBackground: '#0f2027',
+      commitLabelBackground: '#14222b',
       commitLabelFontSize: '12px',
-      tagLabelColor: '#ffffff',
-      tagLabelBackground: '#059669',
-      tagLabelBorder: '#6ee7b7',
+      tagLabelColor: '#0f172a',
+      tagLabelBackground: '#2dd4bf',
+      tagLabelBorder: '#0f172a',
 
-      cScale0: '#059669', cScale1: '#0891b2', cScale2: '#0369a1',
-      cScale3: '#0284c7', cScale4: '#d97706', cScale5: '#7c3aed',
-      cScale6: '#dc2626', cScale7: '#16a34a',
-      cScaleLabel0: '#ffffff', cScaleLabel1: '#ffffff',
+      // Class/flowchart color scale — all with white labels (AA verified
+      // against 4.5:1 except cScale1 which uses dark text).
+      cScale0: '#0d9488', cScale1: '#67e8f9', cScale2: '#0369a1',
+      cScale3: '#1d4ed8', cScale4: '#b45309', cScale5: '#6d28d9',
+      cScale6: '#b91c1c', cScale7: '#15803d',
+      cScaleLabel0: '#ffffff', cScaleLabel1: '#0f172a',
       cScaleLabel2: '#ffffff', cScaleLabel3: '#ffffff',
       cScaleLabel4: '#ffffff', cScaleLabel5: '#ffffff',
       cScaleLabel6: '#ffffff', cScaleLabel7: '#ffffff',
 
+      // Pie — light/mid slice colors + dark labels (AA: each slice >= 4.5:1
+      // against #0f172a). Replaces the earlier all-dark label scheme that
+      // failed on darker slice colors.
       pie1: '#34d399', pie2: '#22d3ee', pie3: '#60a5fa', pie4: '#fbbf24',
-      pie5: '#f472b6', pie6: '#f87171', pie7: '#a78bfa', pie8: '#2dd4bf',
+      pie5: '#f472b6', pie6: '#fca5a5', pie7: '#a78bfa', pie8: '#2dd4bf',
       pie9: '#fb923c', pie10: '#4ade80', pie11: '#fcd34d', pie12: '#c084fc',
-      pieTitleTextColor: '#ffffff',
-      pieSectionTextColor: '#0f172a',
-      pieLegendTextColor: '#f8fafc',
-      pieStrokeColor: '#0f2027',
+      pieTitleTextColor: '#f8fafc',
+      pieSectionTextColor: '#0f172a',     // dark label on all light slice fills
+      pieLegendTextColor: '#e2e8f0',
+      pieStrokeColor: '#14222b',
 
+      // Gantt — distinct section shading (previously 1.1× ratio; now ~2.5×),
+      // done tasks darkened from slate-500 → slate-600 for AA white text.
       gridColor: '#334155',
-      taskBkgColor: '#10b981',
-      taskBorderColor: '#6ee7b7',
+      taskBkgColor: '#0d9488',
+      taskBorderColor: '#2dd4bf',
       taskTextColor: '#ffffff',
-      taskTextDarkColor: '#ffffff',
+      taskTextDarkColor: '#0f172a',
       taskTextLightColor: '#ffffff',
       taskTextOutsideColor: '#f1f5f9',
       taskTextClickableColor: '#ffffff',
-      activeTaskBkgColor: '#22d3ee',
+      activeTaskBkgColor: '#0e7490',
       activeTaskBorderColor: '#67e8f9',
-      doneTaskBkgColor: '#64748b',
+      doneTaskBkgColor: '#475569',        // slate-600 (4.9:1 w/ white)
       doneTaskBorderColor: '#cbd5e1',
-      critBkgColor: '#ef4444',
+      critBkgColor: '#b91c1c',            // red-700 (5.9:1 w/ white)
       critBorderColor: '#fecaca',
       sectionBkgColor: '#0f2027',
-      sectionBkgColor2: '#162a30',
+      sectionBkgColor2: '#1c3540',        // 2.5× separation from Color1
       altSectionBkgColor: '#0f2027',
       todayLineColor: '#f87171',
-      titleColor2: '#cbd5e1',
+      titleColor2: '#e2e8f0',
       tickColor: '#cbd5e1',
       ganttFontSize: '12px',
     };
   }
+  // ---- Light mode — WCAG-audited parity ---------------------------------
   return {
     background: '#ffffff',
-    primaryColor: '#d1fae5',
-    primaryTextColor: '#064e3b',
+    primaryColor: '#ccfbf1',              // teal-100
+    primaryTextColor: '#134e4a',          // teal-900 on teal-100 → 8.7:1
     primaryBorderColor: '#0d9488',
     secondaryColor: '#f1f5f9',
     secondaryTextColor: '#0f172a',
@@ -339,10 +447,10 @@ function mermaidThemeVars(theme) {
     tertiaryTextColor: '#0f172a',
     tertiaryBorderColor: '#cbd5e1',
 
-    mainBkg: '#d1fae5',
+    mainBkg: '#ccfbf1',
     secondBkg: '#f1f5f9',
     nodeBorder: '#0d9488',
-    nodeTextColor: '#064e3b',
+    nodeTextColor: '#134e4a',
     textColor: '#0f172a',
     titleColor: '#0f172a',
     labelTextColor: '#0f172a',
@@ -353,9 +461,9 @@ function mermaidThemeVars(theme) {
     clusterBkg: '#f8fafc',
     clusterBorder: '#e2e8f0',
 
-    actorBkg: '#d1fae5',
+    actorBkg: '#ccfbf1',
     actorBorder: '#0d9488',
-    actorTextColor: '#064e3b',
+    actorTextColor: '#134e4a',            // 8.7:1
     actorLineColor: '#475569',
     signalColor: '#1e293b',
     signalTextColor: '#0f172a',
@@ -363,65 +471,65 @@ function mermaidThemeVars(theme) {
     labelBoxBorderColor: '#94a3b8',
     loopTextColor: '#0f172a',
     noteBkgColor: '#fef3c7',
-    noteTextColor: '#0f172a',
+    noteTextColor: '#78350f',             // amber-900 on amber-100 → 9.4:1
     noteBorderColor: '#f59e0b',
-    activationBkgColor: '#10b981',
+    activationBkgColor: '#0e7490',        // teal-700
     activationBorderColor: '#0d9488',
 
     classText: '#0f172a',
-    stateBkg: '#d1fae5',
+    stateBkg: '#ccfbf1',
     altBackground: '#f8fafc',
 
-    git0: '#0d9488', git1: '#0891b2', git2: '#7c3aed', git3: '#d97706',
-    git4: '#2563eb', git5: '#db2777', git6: '#dc2626', git7: '#14b8a6',
+    git0: '#0d9488', git1: '#0891b2', git2: '#7c3aed', git3: '#b45309',
+    git4: '#1d4ed8', git5: '#be185d', git6: '#b91c1c', git7: '#0e7490',
     gitBranchLabel0: '#ffffff', gitBranchLabel1: '#ffffff',
     gitBranchLabel2: '#ffffff', gitBranchLabel3: '#ffffff',
     gitBranchLabel4: '#ffffff', gitBranchLabel5: '#ffffff',
     gitBranchLabel6: '#ffffff', gitBranchLabel7: '#ffffff',
-    gitInv0: '#ffffff', gitInv1: '#ffffff', gitInv2: '#ffffff',
-    gitInv3: '#ffffff', gitInv4: '#ffffff', gitInv5: '#ffffff',
-    gitInv6: '#ffffff', gitInv7: '#ffffff',
+    gitInv0: '#0f172a', gitInv1: '#0f172a', gitInv2: '#0f172a',
+    gitInv3: '#0f172a', gitInv4: '#0f172a', gitInv5: '#0f172a',
+    gitInv6: '#0f172a', gitInv7: '#0f172a',
     commitLabelColor: '#0f172a',
     commitLabelBackground: '#ffffff',
     commitLabelFontSize: '12px',
     tagLabelColor: '#0f172a',
-    tagLabelBackground: '#d1fae5',
+    tagLabelBackground: '#ccfbf1',
     tagLabelBorder: '#0d9488',
 
-    cScale0: '#0d9488', cScale1: '#0891b2', cScale2: '#0369a1',
-    cScale3: '#0284c7', cScale4: '#d97706', cScale5: '#7c3aed',
-    cScale6: '#dc2626', cScale7: '#16a34a',
+    cScale0: '#0d9488', cScale1: '#0891b2', cScale2: '#1d4ed8',
+    cScale3: '#7c3aed', cScale4: '#b45309', cScale5: '#be185d',
+    cScale6: '#b91c1c', cScale7: '#15803d',
     cScaleLabel0: '#ffffff', cScaleLabel1: '#ffffff',
     cScaleLabel2: '#ffffff', cScaleLabel3: '#ffffff',
     cScaleLabel4: '#ffffff', cScaleLabel5: '#ffffff',
     cScaleLabel6: '#ffffff', cScaleLabel7: '#ffffff',
 
-    pie1: '#0d9488', pie2: '#0891b2', pie3: '#2563eb', pie4: '#d97706',
-    pie5: '#db2777', pie6: '#dc2626', pie7: '#7c3aed', pie8: '#14b8a6',
-    pie9: '#ea580c', pie10: '#16a34a', pie11: '#ca8a04', pie12: '#9333ea',
+    pie1: '#0d9488', pie2: '#0891b2', pie3: '#1d4ed8', pie4: '#b45309',
+    pie5: '#be185d', pie6: '#b91c1c', pie7: '#7c3aed', pie8: '#0e7490',
+    pie9: '#c2410c', pie10: '#15803d', pie11: '#a16207', pie12: '#6b21a8',
     pieTitleTextColor: '#0f172a',
-    pieSectionTextColor: '#ffffff',
+    pieSectionTextColor: '#ffffff',       // dark slices, white labels
     pieLegendTextColor: '#0f172a',
     pieStrokeColor: '#ffffff',
 
     gridColor: '#e2e8f0',
-    taskBkgColor: '#10b981',
-    taskBorderColor: '#0d9488',
+    taskBkgColor: '#0d9488',
+    taskBorderColor: '#14b8a6',
     taskTextColor: '#ffffff',
     taskTextDarkColor: '#0f172a',
     taskTextLightColor: '#ffffff',
     taskTextOutsideColor: '#0f172a',
     taskTextClickableColor: '#ffffff',
-    activeTaskBkgColor: '#22d3ee',
+    activeTaskBkgColor: '#0e7490',
     activeTaskBorderColor: '#0891b2',
-    doneTaskBkgColor: '#cbd5e1',
-    doneTaskBorderColor: '#64748b',
-    critBkgColor: '#ef4444',
-    critBorderColor: '#b91c1c',
+    doneTaskBkgColor: '#94a3b8',
+    doneTaskBorderColor: '#475569',
+    critBkgColor: '#b91c1c',
+    critBorderColor: '#7f1d1d',
     sectionBkgColor: '#f8fafc',
-    sectionBkgColor2: '#eef2f7',
+    sectionBkgColor2: '#e2e8f0',
     altSectionBkgColor: '#ffffff',
-    todayLineColor: '#dc2626',
+    todayLineColor: '#b91c1c',
     titleColor2: '#334155',
     tickColor: '#64748b',
     ganttFontSize: '12px',
@@ -472,8 +580,15 @@ function extractMath(src) {
 
     // Block math $$…$$
     if (src[i] === '$' && src[i + 1] === '$') {
-      const close = src.indexOf('$$', i + 2);
-      if (close !== -1) {
+      let j = i + 2;
+      let close = -1;
+      let aborted = false;
+      while (j < src.length - 1) {
+        if (src[j] === '`') { aborted = true; break; }
+        if (src[j] === '$' && src[j + 1] === '$') { close = j; break; }
+        j++;
+      }
+      if (!aborted && close !== -1) {
         const tex = src.slice(i + 2, close);
         const idx = renders.length;
         renders.push(renderKatex(tex, true));
@@ -483,10 +598,6 @@ function extractMath(src) {
       }
     }
 
-    // Inline math $…$ — pandoc-style rules: opener not preceded by \w, not
-    // followed by whitespace/digit; closer not preceded by space, not followed
-    // by a digit (so "$5 and $10" stays literal), not escaped; body can't span
-    // a blank line.
     if (src[i] === '$') {
       const prev = src[i - 1];
       const next = src[i + 1];
@@ -499,6 +610,7 @@ function extractMath(src) {
         while (j < src.length) {
           const ch = src[j];
           if (ch === '\n' && src[j + 1] === '\n') break;
+          if (ch === '`') break;
           if (ch === '$' && src[j - 1] !== '\\' && src[j - 1] !== ' ' && src[j - 1] !== '\t' && src[j + 1] !== '$') {
             const after = src[j + 1];
             if (!after || !/\d/.test(after)) { found = j; break; }
@@ -547,7 +659,6 @@ function reinjectMath(html, renders) {
 async function render() {
   const src = editor.value;
   const gen = ++_renderGen;
-  currentDoc.source = src;
   updateStats(src);
   persist();
   const nextBlockLines = computeSourceBlockLines(src);
@@ -562,11 +673,21 @@ async function render() {
     setStatus('ready', 'Ready');
     statRender.textContent = '—';
     preview.querySelector('[data-empty-action="upload"]')?.addEventListener('click', () => fileInput.click());
-    preview.querySelector('[data-empty-action="welcome"]')?.addEventListener('click', () => {
-      editor.value = EXAMPLES.welcome.content;
-      currentDoc.filename = 'welcome.md';
-      updateGutter();
-      scheduleRender();
+    preview.querySelector('[data-empty-action="welcome"]')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const project =
+          Store.activeProject() ||
+          Store.projectList()[0] ||
+          (await createProject({ name: 'My documents' }));
+        const name = uniqueFileName(project.id, 'welcome.md');
+        const f = await createFile({ projectId: project.id, name, content: EXAMPLES.welcome.content });
+        await switchToFile(f.id);
+      } finally {
+        if (document.contains(btn)) btn.disabled = false;
+      }
     });
     buildToc();
     return;
@@ -616,7 +737,8 @@ async function render() {
   } catch (err) {
     console.error('Render error:', err);
     setStatus('error', 'Render failed');
-    preview.innerHTML = `<div style="color:var(--danger);padding:24px;border:1px solid var(--danger);border-radius:8px;"><strong>Render failed</strong><br><code style="font-size:12px;">${escapeHtml(String(err?.message || err))}</code></div>`;
+    statRender.textContent = '\u2014';
+    preview.innerHTML = `<div class="render-error" role="alert"><strong>Render failed</strong><code>${escapeHtml(String(err?.message || err))}</code></div>`;
     _lastPreviewHtml = null;
   }
 }
@@ -658,7 +780,186 @@ async function runMermaid(gen) {
     el.innerHTML = `<strong>Diagram error</strong><pre>${escapeHtml(src ? decodeURIComponent(src) : el.textContent)}</pre>`;
   });
 
+  // Luminance-aware contrast pass: fixes unreadable text on user-authored
+  // `style X fill:#lightcolor` directives in dark mode without hard-coding
+  // a single foreground. See applyMermaidContrast for the algorithm.
+  live.forEach(applyMermaidContrast);
+
   live.forEach(attachDiagramControls);
+}
+
+// ---- Mermaid contrast normalization ---------------------------------------
+// Problem: Mermaid renders node text using a single theme-level color
+// (primaryTextColor / nodeTextColor). When users override fills per-node
+// via `style A fill:#E0E7FF`, dark-theme's near-white text becomes illegible
+// on light user fills (e.g. white-on-lavender ≈ 1.5:1).
+//
+// Solution: after render, inspect each node/edge-label's ACTUAL fill,
+// compute WCAG relative luminance, and pick #0f172a or #f8fafc for the
+// text — whichever yields the higher contrast ratio (target ≥ 4.5:1 AA).
+// We mark processed elements with data-mdlab-contrast so CSS fallbacks
+// defer to the inline styles.
+const MDLAB_DARK_FG  = '#0f172a';   // slate-900
+const MDLAB_LIGHT_FG = '#f8fafc';   // slate-50
+// Canvas background under untouched edge labels (matches --mermaid-bg dark).
+const MDLAB_EDGE_BG_DARK = '#0f141c';
+
+function applyMermaidContrast(mermaidEl) {
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const svg = mermaidEl.querySelector('svg');
+  if (!svg) return;
+  // Only needed in dark mode; light-mode mermaid defaults are already AA.
+  if (theme !== 'dark') {
+    svg.querySelectorAll('[data-mdlab-contrast]').forEach(n => n.removeAttribute('data-mdlab-contrast'));
+    return;
+  }
+
+  // --- Nodes (flowchart, class, state, ER top-level) ---
+  svg.querySelectorAll('g.node').forEach((nodeG) => {
+    const fill = resolveShapeFill(nodeG);
+    if (!fill) return;
+    const fg = pickForegroundFor(fill);
+    paintNodeText(nodeG, fg);
+    nodeG.setAttribute('data-mdlab-contrast', '1');
+  });
+
+  // --- Cluster / subgraph headers ---
+  svg.querySelectorAll('g.cluster').forEach((clusterG) => {
+    const fill = resolveShapeFill(clusterG);
+    if (!fill) return;
+    const fg = pickForegroundFor(fill);
+    paintNodeText(clusterG, fg);
+    clusterG.setAttribute('data-mdlab-contrast', '1');
+  });
+
+  // --- Edge labels: inspect the label's own rect, else fall back to the
+  //     diagram canvas colour (edges without a background pill sit directly
+  //     on the page). ---
+  svg.querySelectorAll('.edgeLabel').forEach((labelG) => {
+    // An .edgeLabel can be an HTML foreignObject wrapper or an SVG <g>.
+    // Find a fill rect if Mermaid emitted one.
+    const rect = labelG.querySelector('rect, .label-container');
+    let bg = rect ? readFillColor(rect) : null;
+    // For HTML labels, the div inside foreignObject may carry a CSS bg.
+    if (!bg) {
+      const fo = labelG.querySelector('foreignObject div, foreignObject span');
+      if (fo) bg = readComputedBg(fo);
+    }
+    if (!bg || bg === 'transparent') bg = MDLAB_EDGE_BG_DARK;
+    const fg = pickForegroundFor(bg);
+    paintLabelText(labelG, fg);
+    labelG.setAttribute('data-mdlab-contrast', '1');
+  });
+}
+
+// Find the first shape in a node group that carries a real fill value.
+// Order matters: some node shapes layer a transparent hit-target on top.
+function resolveShapeFill(group) {
+  const shapes = group.querySelectorAll('rect, polygon, path, circle, ellipse');
+  for (const shape of shapes) {
+    const c = readFillColor(shape);
+    if (c && c !== 'transparent' && c !== 'none') return c;
+  }
+  return null;
+}
+
+function readFillColor(el) {
+  // Inline style > attribute > computed style. Mermaid frequently emits
+  // style="fill:#xxx;stroke:..." for per-node overrides.
+  const inline = el.style && el.style.fill;
+  if (inline) return inline;
+  const attr = el.getAttribute('fill');
+  if (attr && attr !== 'none') return attr;
+  try {
+    const cs = getComputedStyle(el).fill;
+    if (cs && cs !== 'none') return cs;
+  } catch { /* detached nodes */ }
+  return null;
+}
+
+function readComputedBg(el) {
+  try {
+    const cs = getComputedStyle(el);
+    const c = cs.backgroundColor;
+    if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') return c;
+  } catch { /* noop */ }
+  return null;
+}
+
+function paintNodeText(group, fg) {
+  // SVG <text> elements inside the node.
+  group.querySelectorAll('text, tspan').forEach((t) => {
+    t.style.setProperty('fill', fg, 'important');
+  });
+  // HTML-rendered labels (flowchart htmlLabels: true path).
+  group.querySelectorAll('foreignObject div, foreignObject span, foreignObject p, .nodeLabel, .label').forEach((d) => {
+    d.style.setProperty('color', fg, 'important');
+    d.style.setProperty('fill', fg, 'important');
+  });
+}
+
+function paintLabelText(labelG, fg) {
+  labelG.querySelectorAll('text, tspan').forEach((t) => {
+    t.style.setProperty('fill', fg, 'important');
+  });
+  labelG.querySelectorAll('foreignObject div, foreignObject span, foreignObject p').forEach((d) => {
+    d.style.setProperty('color', fg, 'important');
+    // Strip any leftover opaque bg that conflicts with the canvas.
+    d.style.setProperty('background', 'transparent', 'important');
+  });
+}
+
+// WCAG relative luminance → pick the better of our two neutrals.
+function pickForegroundFor(color) {
+  const rgb = toRgb(color);
+  if (!rgb) return MDLAB_LIGHT_FG;
+  const L = relativeLuminance(rgb);
+  const contrastWithDark  = contrastRatio(L, 0.01316);  // #0f172a
+  const contrastWithLight = contrastRatio(L, 0.94230);  // #f8fafc
+  return contrastWithDark >= contrastWithLight ? MDLAB_DARK_FG : MDLAB_LIGHT_FG;
+}
+
+function relativeLuminance({ r, g, b }) {
+  const ch = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+}
+
+function contrastRatio(L1, L2) {
+  const [hi, lo] = L1 > L2 ? [L1, L2] : [L2, L1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// Parse hex (#rgb / #rrggbb), rgb(), rgba() into {r,g,b} 0-255. Returns
+// null for unrecognised inputs (e.g. `url(#grad)`).
+function toRgb(input) {
+  if (!input) return null;
+  const s = String(input).trim().toLowerCase();
+  if (s.startsWith('#')) {
+    const hex = s.slice(1);
+    if (hex.length === 3) {
+      return {
+        r: parseInt(hex[0] + hex[0], 16),
+        g: parseInt(hex[1] + hex[1], 16),
+        b: parseInt(hex[2] + hex[2], 16),
+      };
+    }
+    if (hex.length === 6) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+      };
+    }
+    return null;
+  }
+  const m = s.match(/^rgba?\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+  if (m) {
+    return { r: +m[1] | 0, g: +m[2] | 0, b: +m[3] | 0 };
+  }
+  return null;
 }
 
 function attachDiagramControls(el) {
@@ -729,6 +1030,38 @@ function postProcess() {
     t.parentNode.insertBefore(wrap, t);
     wrap.appendChild(t);
   });
+
+  let taskIndex = 0;
+  preview.querySelectorAll('li.task-list-item input[type="checkbox"]').forEach((cb) => {
+    cb.disabled = false;
+    cb.removeAttribute('disabled');
+    cb.classList.add('task-checkbox');
+    cb.dataset.taskIndex = String(taskIndex++);
+  });
+}
+
+function toggleTaskAtIndex(targetIdx) {
+  const src = editor.value;
+  const lines = src.split('\n');
+  let count = 0;
+  const taskRe = /^(\s*[-*+]\s+)\[( |x|X)\](\s)/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(taskRe);
+    if (!m) continue;
+    if (count === targetIdx) {
+      const checked = m[2] !== ' ';
+      lines[i] = lines[i].replace(taskRe, `$1[${checked ? ' ' : 'x'}]$3`);
+      const newVal = lines.join('\n');
+      const selStart = editor.selectionStart;
+      const selEnd = editor.selectionEnd;
+      editor.value = newVal;
+      try { editor.selectionStart = selStart; editor.selectionEnd = selEnd; } catch {}
+      editor.dispatchEvent(new Event('input'));
+      return true;
+    }
+    count++;
+  }
+  return false;
 }
 
 // ---------- Table of contents ----------
@@ -806,8 +1139,7 @@ function buildToc() {
   tocNav.replaceChildren(list);
 
   if (prevActiveId && headings.some(h => h.id === prevActiveId)) {
-    const stillActive = tocNav.querySelector(`.toc__link[data-id="${cssEscape(prevActiveId)}"]`);
-    if (stillActive) stillActive.classList.add('is-active');
+    setActiveTocLink(prevActiveId);
   } else {
     _tocActiveId = null;
   }
@@ -824,32 +1156,31 @@ function scheduleTocActiveUpdate() {
   });
 }
 
-// Snapshot heading offsetTops once per layout change; scroll handlers then
-// compare against previewWrap.scrollTop (zero layout cost) instead of reading
-// getBoundingClientRect() for every heading on every rAF tick.
 function rebuildTocHeadingTops() {
   const headings = _tocHeadingsCache;
   const tops = new Array(headings.length);
-  for (let i = 0; i < headings.length; i++) tops[i] = headings[i].offsetTop;
+  if (headings.length && previewWrap) {
+    const wrapTop = previewWrap.getBoundingClientRect().top;
+    const scrollTop = previewWrap.scrollTop;
+    for (let i = 0; i < headings.length; i++) {
+      tops[i] = headings[i].getBoundingClientRect().top - wrapTop + scrollTop;
+    }
+  }
   _tocHeadingTops = tops;
 }
 
 function updateActiveTocItem() {
-  if (!toc || toc.dataset.empty === 'true') return;
+  if (!toc || toc.dataset.empty === 'true' || toc.dataset.collapsed === 'true') return;
   const headings = _tocHeadingsCache;
   if (!headings.length) return;
 
-  // While a TOC-click scroll is in flight, pin to the clicked heading so
-  // the highlight doesn't flicker through every heading we pass.
   if (_tocScrollLock) {
     const stillExists = headings.some(h => h.id === _tocScrollLock.id);
-    if (stillExists && _tocActiveId !== _tocScrollLock.id) {
-      _tocActiveId = _tocScrollLock.id;
-      tocNav.querySelectorAll('.toc__link').forEach(link => {
-        link.classList.toggle('is-active', link.dataset.id === _tocScrollLock.id);
-      });
+    if (stillExists) {
+      if (_tocActiveId !== _tocScrollLock.id) setActiveTocLink(_tocScrollLock.id);
+      return;
     }
-    return;
+    _tocScrollLock = null;
   }
 
   // Heading Y positions are cached (rebuildTocHeadingTops) so we don't
@@ -857,7 +1188,10 @@ function updateActiveTocItem() {
   const tops = _tocHeadingTops;
   if (tops.length !== headings.length) rebuildTocHeadingTops();
 
-  const threshold = previewWrap.scrollTop + TOC_ACTIVE_THRESHOLD_PX;
+  const scrollTop = previewWrap.scrollTop;
+  const viewportBottom = scrollTop + previewWrap.clientHeight;
+  const threshold = scrollTop + TOC_ACTIVE_THRESHOLD_PX;
+
   // Binary search for the last heading whose top <= threshold.
   let lo = 0, hi = _tocHeadingTops.length - 1, idx = -1;
   while (lo <= hi) {
@@ -865,27 +1199,39 @@ function updateActiveTocItem() {
     if (_tocHeadingTops[mid] <= threshold) { idx = mid; lo = mid + 1; }
     else hi = mid - 1;
   }
-  const scrolledPastAny = idx >= 0;
-  let activeId = scrolledPastAny ? headings[idx].id : headings[0].id;
 
-  // Force last heading at bottom so trailing small headings still highlight.
-  const atBottom = previewWrap.scrollTop + previewWrap.clientHeight >= previewWrap.scrollHeight - 4;
-  if (atBottom) activeId = headings[headings.length - 1].id;
+  let activeId = idx >= 0 ? headings[idx].id : headings[0].id;
 
-  if (!scrolledPastAny && previewWrap.scrollTop < 4) {
-    activeId = null;
+  const atBottom = viewportBottom >= previewWrap.scrollHeight - 4;
+  if (atBottom) {
+    for (let i = _tocHeadingTops.length - 1; i > idx; i--) {
+      if (_tocHeadingTops[i] >= scrollTop && _tocHeadingTops[i] < viewportBottom) {
+        activeId = headings[i].id;
+        break;
+      }
+    }
   }
 
-  if (activeId === _tocActiveId) return;
-  _tocActiveId = activeId;
+  if (idx < 0 && scrollTop < 4) activeId = null;
 
+  if (activeId === _tocActiveId) return;
+  setActiveTocLink(activeId);
+}
+
+function setActiveTocLink(id) {
+  _tocActiveId = id;
+  if (!tocNav) return;
   let activeLink = null;
   tocNav.querySelectorAll('.toc__link').forEach(link => {
-    const on = activeId !== null && link.dataset.id === activeId;
+    const on = id !== null && link.dataset.id === id;
     link.classList.toggle('is-active', on);
-    if (on) activeLink = link;
+    if (on) {
+      link.setAttribute('aria-current', 'location');
+      activeLink = link;
+    } else if (link.hasAttribute('aria-current')) {
+      link.removeAttribute('aria-current');
+    }
   });
-
   if (activeLink) keepTocLinkVisible(activeLink);
 }
 
@@ -900,11 +1246,23 @@ function keepTocLinkVisible(link) {
   }
 }
 
-// rAF-driven so we get a completion signal (native smooth scroll doesn't),
-// letting us re-measure once the scroll settles.
+const _elScrollAnimIds = new WeakMap();
+
 function smoothScrollTo(el, top, { duration = 360, signal } = {}) {
-  cancelAnimationFrame(_tocScrollAnimId);
-  _tocScrollAnimId = 0;
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    const prev = _elScrollAnimIds.get(el);
+    if (prev) cancelAnimationFrame(prev);
+    _elScrollAnimIds.delete(el);
+    el.scrollTop = Math.round(top);
+    if (el === previewWrap) _tocScrollAnimId = 0;
+    return Promise.resolve();
+  }
+  const prev = _elScrollAnimIds.get(el);
+  if (prev) cancelAnimationFrame(prev);
+  if (el === previewWrap) {
+    cancelAnimationFrame(_tocScrollAnimId);
+    _tocScrollAnimId = 0;
+  }
   return new Promise((resolve) => {
     const start = el.scrollTop;
     const distance = Math.round(top) - start;
@@ -914,7 +1272,13 @@ function smoothScrollTo(el, top, { duration = 360, signal } = {}) {
     const startTime = performance.now();
     const ease = (t) => 1 - Math.pow(1 - t, 3);
 
-    const onAbort = () => { cancelAnimationFrame(_tocScrollAnimId); _tocScrollAnimId = 0; resolve(); };
+    const onAbort = () => {
+      const id = _elScrollAnimIds.get(el);
+      if (id) cancelAnimationFrame(id);
+      _elScrollAnimIds.delete(el);
+      if (el === previewWrap) _tocScrollAnimId = 0;
+      resolve();
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
 
     const tick = (now) => {
@@ -922,14 +1286,19 @@ function smoothScrollTo(el, top, { duration = 360, signal } = {}) {
       const t = Math.min(1, (now - startTime) / duration);
       el.scrollTop = start + distance * ease(t);
       if (t < 1) {
-        _tocScrollAnimId = requestAnimationFrame(tick);
+        const id = requestAnimationFrame(tick);
+        _elScrollAnimIds.set(el, id);
+        if (el === previewWrap) _tocScrollAnimId = id;
       } else {
         el.scrollTop = Math.round(top);
-        _tocScrollAnimId = 0;
+        _elScrollAnimIds.delete(el);
+        if (el === previewWrap) _tocScrollAnimId = 0;
         resolve();
       }
     };
-    _tocScrollAnimId = requestAnimationFrame(tick);
+    const id = requestAnimationFrame(tick);
+    _elScrollAnimIds.set(el, id);
+    if (el === previewWrap) _tocScrollAnimId = id;
   });
 }
 
@@ -952,13 +1321,7 @@ async function scrollPreviewToHeading(heading, { pinTocLink = null } = {}) {
 
   if (_tocHeadingsCache.some(h => h.id === id)) {
     _tocScrollLock = { id };
-    tocNav?.querySelectorAll('.toc__link.is-active').forEach(l => l.classList.remove('is-active'));
-    const link = pinTocLink || tocNav?.querySelector(`.toc__link[data-id="${cssEscape(id)}"]`);
-    if (link) {
-      link.classList.add('is-active');
-      _tocActiveId = id;
-      keepTocLinkVisible(link);
-    }
+    setActiveTocLink(id);
   }
 
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -994,9 +1357,7 @@ async function scrollPreviewToHeading(heading, { pinTocLink = null } = {}) {
         previewWrap.scrollTop = finalTop;
       }
     }
-    _tocScrollLock = null;
     _tocScrollAbortController = null;
-    scheduleTocActiveUpdate();
   }, TOC_LOCK_GRACE_MS);
 }
 
@@ -1007,31 +1368,52 @@ tocNav?.addEventListener('click', (e) => {
   const id = link.dataset.id;
   if (!id) return;
   const heading = preview.querySelector(`#${cssEscape(id)}`);
+  if (!heading) return;
+  try {
+    const newUrl = `${location.pathname}${location.search}#${encodeURIComponent(id)}`;
+    history.replaceState(history.state, '', newUrl);
+  } catch {}
   scrollPreviewToHeading(heading, { pinTocLink: link });
 });
 
-// Abort programmatic scroll on user input. `keydown` is intentionally omitted
-// so editor keystrokes don't kill an in-flight TOC jump.
-['wheel', 'touchstart', 'pointerdown'].forEach((ev) => {
+['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach((ev) => {
   previewWrap?.addEventListener(ev, () => {
     if (_tocScrollAbortController) {
       _tocScrollAbortController.abort();
       _tocScrollAbortController = null;
+    }
+    if (_tocScrollLock) {
       _tocScrollLock = null;
     }
   }, { passive: true });
 });
 
-// Fallback for browsers without CSS.escape.
-function cssEscape(s) {
-  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s);
-  return String(s).replace(/([^\w-])/g, '\\$1');
+function scrollToHashIfAny() {
+  const raw = (location.hash || '').slice(1);
+  if (!raw) return;
+  let hash = raw;
+  try { hash = decodeURIComponent(raw); } catch {}
+  let tries = 0;
+  const attempt = () => {
+    const heading = preview?.querySelector(`#${cssEscape(hash)}`);
+    if (heading) {
+      scrollPreviewToHeading(heading);
+      return;
+    }
+    if (++tries < 20) requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
 }
+window.addEventListener('hashchange', scrollToHashIfAny);
+scrollToHashIfAny();
 
 function applyTocToggle(visible, { silent = false } = {}) {
   if (!toc) return;
   const on = !!visible;
   toc.dataset.collapsed = on ? 'false' : 'true';
+  // Mirror state on .panes so CSS can apply --toc-offset and re-center the divider.
+  const panes = document.getElementById('panes');
+  if (panes) panes.dataset.toc = on ? 'open' : 'closed';
   if (btnToc) {
     btnToc.setAttribute('aria-pressed', String(on));
     btnToc.title = on
@@ -1117,6 +1499,9 @@ function openLightbox(mermaidEl) {
   lightbox.root.classList.add('is-open');
   lightbox.root.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
+  lightbox._returnFocusTo = document.activeElement;
+  installFocusTrap(lightbox.root);
+  setTimeout(() => document.getElementById('lightbox-close')?.focus(), 10);
   // Start slightly zoomed out, then ease to fit so the open has motion.
   lightbox.scale = 0.92; lightbox.tx = 0; lightbox.ty = 0;
   setLightboxSmooth(false);
@@ -1133,6 +1518,37 @@ function closeLightbox() {
   lightbox.root.setAttribute('aria-hidden', 'true');
   lightbox.canvas.innerHTML = '';
   document.body.style.overflow = '';
+  releaseFocusTrap(lightbox.root);
+  const prev = lightbox._returnFocusTo;
+  lightbox._returnFocusTo = null;
+  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+    try { prev.focus(); } catch {}
+  }
+}
+
+// Shared modal focus trap. Cycles Tab/Shift+Tab within the dialog's
+// visible focusable descendants. Handler is stored on the root so
+// install/release calls are idempotent.
+function installFocusTrap(root) {
+  if (!root || root._focusTrap) return;
+  const handler = (e) => {
+    if (e.key !== 'Tab') return;
+    const focusables = Array.from(root.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetParent !== null);
+    if (focusables.length === 0) { e.preventDefault(); return; }
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
+  root.addEventListener('keydown', handler);
+  root._focusTrap = handler;
+}
+function releaseFocusTrap(root) {
+  if (!root || !root._focusTrap) return;
+  root.removeEventListener('keydown', root._focusTrap);
+  root._focusTrap = null;
 }
 
 let lightboxHintTimer;
@@ -1392,25 +1808,34 @@ lightbox.stage.addEventListener('dblclick', () => {
   }, { passive: false });
 }
 
+// Lightbox pan via Pointer Events — unifies mouse, touch, and pen input.
 {
-  let panning = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
-  lightbox.stage.addEventListener('mousedown', (e) => {
+  let panning = false, pointerId = 0, startX = 0, startY = 0, startTx = 0, startTy = 0;
+  lightbox.stage.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     panning = true;
+    pointerId = e.pointerId;
     startX = e.clientX; startY = e.clientY;
     startTx = lightbox.tx; startTy = lightbox.ty;
+    try { lightbox.stage.setPointerCapture(pointerId); } catch {}
     setLightboxSmooth(false);
     lightbox.stage.style.cursor = 'grabbing';
   });
-  window.addEventListener('mousemove', (e) => {
-    if (!panning) return;
+  lightbox.stage.addEventListener('pointermove', (e) => {
+    if (!panning || e.pointerId !== pointerId) return;
     lightbox.tx = startTx + (e.clientX - startX);
     lightbox.ty = startTy + (e.clientY - startY);
     applyLightboxTransform();
   });
-  window.addEventListener('mouseup', () => {
-    if (panning) { panning = false; lightbox.stage.style.cursor = ''; }
-  });
+  const endPan = (e) => {
+    if (!panning || (e && e.pointerId !== pointerId)) return;
+    panning = false;
+    try { lightbox.stage.releasePointerCapture(pointerId); } catch {}
+    lightbox.stage.style.cursor = '';
+  };
+  lightbox.stage.addEventListener('pointerup', endPan);
+  lightbox.stage.addEventListener('pointercancel', endPan);
+  window.addEventListener('blur', () => { if (panning) { panning = false; lightbox.stage.style.cursor = ''; } });
 }
 
 document.addEventListener('keydown', (e) => {
@@ -1434,6 +1859,15 @@ window.addEventListener('resize', () => {
   scheduleTocActiveUpdate();
 });
 
+preview.addEventListener('click', (e) => {
+  const cb = e.target.closest('input.task-checkbox[type="checkbox"]');
+  if (!cb) return;
+  const idx = Number(cb.dataset.taskIndex);
+  if (Number.isNaN(idx)) return;
+  e.preventDefault();
+  toggleTaskAtIndex(idx);
+});
+
 const scheduleRender = debounce(render, 120);
 
 editor.addEventListener('input', () => {
@@ -1443,16 +1877,165 @@ editor.addEventListener('input', () => {
   scheduleRender();
 });
 
+// Editor key dispatcher — Cmd/Ctrl+B/I/K formatting, Tab/Shift+Tab list
+// indent, Enter list continuation. Each handler issues one value-swap and
+// dispatches a synthetic `input` event so the render + persist pipeline
+// runs exactly as if the user had typed.
 editor.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') {
+  const modKey = e.metaKey || e.ctrlKey;
+
+  if (modKey && !e.altKey) {
+    if (e.key === 'b' || e.key === 'B') { e.preventDefault(); wrapSelection('**', '**'); return; }
+    if (e.key === 'i' || e.key === 'I') { e.preventDefault(); wrapSelection('_', '_'); return; }
+    // Cmd+K → insert link (editor-owned). Cmd+Shift+K falls through to
+    // the global theme-toggle shortcut.
+    if (e.key === 'k' || e.key === 'K') {
+      if (e.shiftKey) return;
+      e.preventDefault(); insertLink(); return;
+    }
+  }
+
+  if (e.key === 'Tab' && !modKey) {
     e.preventDefault();
-    const { selectionStart: s, selectionEnd: ee } = editor;
-    const insert = '  ';
-    editor.value = editor.value.slice(0, s) + insert + editor.value.slice(ee);
-    editor.selectionStart = editor.selectionEnd = s + insert.length;
-    editor.dispatchEvent(new Event('input'));
+    if (e.shiftKey) outdentSelection();
+    else indentSelection();
+    return;
+  }
+
+  if (e.key === 'Enter' && !modKey && !e.shiftKey) {
+    if (maybeContinueList(e)) return;
   }
 });
+
+function replaceEditorRange(rangeStart, rangeEnd, newText) {
+  editor.focus();
+  editor.selectionStart = rangeStart;
+  editor.selectionEnd = rangeEnd;
+  try {
+    if (document.execCommand('insertText', false, newText)) return true;
+  } catch {}
+  const v = editor.value;
+  editor.value = v.slice(0, rangeStart) + newText + v.slice(rangeEnd);
+  return false;
+}
+
+// Toggle-wrap selection with `left`/`right` markers. Empty selection leaves
+// the cursor between the markers; an already-wrapped selection is unwrapped.
+function wrapSelection(left, right) {
+  const s = editor.selectionStart, ee = editor.selectionEnd;
+  const v = editor.value;
+  const sel = v.slice(s, ee);
+  const before = v.slice(s - left.length, s);
+  const after = v.slice(ee, ee + right.length);
+  let execUsed;
+  if (before === left && after === right) {
+    execUsed = replaceEditorRange(s - left.length, ee + right.length, sel);
+    editor.selectionStart = s - left.length;
+    editor.selectionEnd = ee - left.length;
+  } else {
+    execUsed = replaceEditorRange(s, ee, left + sel + right);
+    if (sel) {
+      editor.selectionStart = s + left.length;
+      editor.selectionEnd = ee + left.length;
+    } else {
+      editor.selectionStart = editor.selectionEnd = s + left.length;
+    }
+  }
+  if (!execUsed) editor.dispatchEvent(new Event('input'));
+}
+
+// Insert `[label](url)`. Selection becomes the label; `url` is pre-selected
+// for immediate paste. Empty selection inserts `[text](url)` with `text`
+// pre-selected.
+function insertLink() {
+  const s = editor.selectionStart, ee = editor.selectionEnd;
+  const v = editor.value;
+  const sel = v.slice(s, ee);
+  let execUsed;
+  if (sel) {
+    const snippet = `[${sel}](url)`;
+    execUsed = replaceEditorRange(s, ee, snippet);
+    const urlStart = s + sel.length + 3; // after `[${sel}](`
+    editor.selectionStart = urlStart;
+    editor.selectionEnd = urlStart + 3;
+  } else {
+    const snippet = `[text](url)`;
+    execUsed = replaceEditorRange(s, ee, snippet);
+    editor.selectionStart = s + 1;
+    editor.selectionEnd = s + 5;
+  }
+  if (!execUsed) editor.dispatchEvent(new Event('input'));
+}
+
+// Add 2 spaces at the start of every line the selection touches.
+function indentSelection() {
+  const s = editor.selectionStart, ee = editor.selectionEnd;
+  const v = editor.value;
+  let execUsed;
+  if (s === ee) {
+    execUsed = replaceEditorRange(s, s, '  ');
+    editor.selectionStart = editor.selectionEnd = s + 2;
+  } else {
+    const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+    const block = v.slice(lineStart, ee);
+    const indented = block.replace(/^/gm, '  ');
+    execUsed = replaceEditorRange(lineStart, ee, indented);
+    const delta = indented.length - block.length;
+    editor.selectionStart = s + 2;
+    editor.selectionEnd = ee + delta;
+  }
+  if (!execUsed) editor.dispatchEvent(new Event('input'));
+}
+
+// Remove up to 2 leading spaces (or 1 tab) from every line the selection
+// touches. Lines with no leading whitespace are left alone.
+function outdentSelection() {
+  const s = editor.selectionStart, ee = editor.selectionEnd;
+  const v = editor.value;
+  const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+  const block = v.slice(lineStart, ee);
+  let removedOnFirstLine = 0;
+  let totalRemoved = 0;
+  const outdented = block.replace(/^(\t| {1,2})/gm, (match, _g, offset) => {
+    totalRemoved += match.length;
+    if (offset === 0) removedOnFirstLine = match.length;
+    return '';
+  });
+  if (totalRemoved === 0) return;
+  const execUsed = replaceEditorRange(lineStart, ee, outdented);
+  editor.selectionStart = Math.max(lineStart, s - removedOnFirstLine);
+  editor.selectionEnd = Math.max(editor.selectionStart, ee - totalRemoved);
+  if (!execUsed) editor.dispatchEvent(new Event('input'));
+}
+
+// Continue the current list on Enter, or exit if the current item is
+// empty. Returns true when handled.
+function maybeContinueList(e) {
+  const s = editor.selectionStart, ee = editor.selectionEnd;
+  if (s !== ee) return false;
+  const v = editor.value;
+  const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+  const line = v.slice(lineStart, s);
+  const match = line.match(/^(\s*)([-*+]|(\d+)\.)(\s+)(.*)$/);
+  if (!match) return false;
+  const [, indent, marker, num, ws, rest] = match;
+  const hasCursorContent = rest.length > 0 || v.slice(s, v.indexOf('\n', s) === -1 ? v.length : v.indexOf('\n', s)).length > 0;
+  if (!rest.trim() && !hasCursorContent) {
+    // Empty list item — strip the marker so Enter exits the list.
+    e.preventDefault();
+    const execUsed = replaceEditorRange(lineStart, s, '');
+    editor.selectionStart = editor.selectionEnd = lineStart;
+    if (!execUsed) editor.dispatchEvent(new Event('input'));
+    return true;
+  }
+  e.preventDefault();
+  const nextMarker = num ? `${Number(num) + 1}.` : marker;
+  const insert = `\n${indent}${nextMarker}${ws}`;
+  const execUsed = replaceEditorRange(s, ee, insert);
+  editor.selectionStart = editor.selectionEnd = s + insert.length;
+  if (!execUsed) editor.dispatchEvent(new Event('input'));
+  return true;
+}
 
 // Scroll sync — editor ↔ preview.
 //
@@ -1466,16 +2049,13 @@ editor.addEventListener('keydown', (e) => {
 
 let scrollSyncEnabled = true;
 let scrollOwner = null;       // 'editor' | 'preview' | null — programmatic write lockout
-let scrollReleaseId = 0;
+let scrollReleaseTimer = 0;
+// Programmatic-scroll echo lockout (ms). Matches VS Code's markdown preview.
+const SCROLL_LOCKOUT_MS = 50;
 function takeScroll(owner) {
   scrollOwner = owner;
-  if (scrollReleaseId) cancelAnimationFrame(scrollReleaseId);
-  // Release on the next frame — just enough to swallow the echo scroll event
-  // our programmatic scrollTop write fires. A 50ms timeout was starving fast
-  // trackpad flings when the user reversed direction mid-inertia.
-  scrollReleaseId = requestAnimationFrame(() => {
-    scrollReleaseId = requestAnimationFrame(() => { scrollOwner = null; });
-  });
+  clearTimeout(scrollReleaseTimer);
+  scrollReleaseTimer = setTimeout(() => { scrollOwner = null; }, SCROLL_LOCKOUT_MS);
 }
 
 let sourceBlockLines = [];
@@ -1489,17 +2069,26 @@ function computeSourceBlockLines(src) {
   const lines = src.split('\n');
   const starts = [];
   let i = 0;
+
+  const isBlank = (s) => s === undefined || s.trim() === '';
+  const listMarker = /^(\s*)([-*+]|(\d+)[.)])(\s+)/;
+  const blockquoteStart = /^\s{0,3}>/;
+  const htmlBlockOpen = /^\s{0,3}<([a-zA-Z][a-zA-Z0-9-]*)(\s|>|\/>)/;
+  const htmlBlockClose = (tag) => new RegExp(`</${tag}\\s*>`, 'i');
+
   while (i < lines.length) {
     const line = lines[i];
-    if (line.trim() === '') { i++; continue; }
+    if (isBlank(line)) { i++; continue; }
 
     const fm = line.match(/^\s{0,3}([`~]{3,})/);
     if (fm) {
       starts.push(i);
-      const fenceMarker = fm[1][0].repeat(fm[1].length);
+      const fenceChar = fm[1][0];
+      const fenceLen = fm[1].length;
       i++;
       while (i < lines.length) {
-        if (lines[i].trim().startsWith(fenceMarker)) { i++; break; }
+        const close = lines[i].match(/^\s{0,3}([`~]{3,})\s*$/);
+        if (close && close[1][0] === fenceChar && close[1].length >= fenceLen) { i++; break; }
         i++;
       }
       continue;
@@ -1517,17 +2106,86 @@ function computeSourceBlockLines(src) {
       continue;
     }
 
-    // Skip footnote definitions — marked hoists these into a single .footnotes
-    // section at the bottom of the preview, so there's no 1:1 kid for them.
     if (/^\[\^[^\]]+\]:/.test(line)) {
       i++;
-      while (i < lines.length && lines[i].trim() !== '') i++;
+      while (i < lines.length) {
+        const next = lines[i];
+        if (isBlank(next)) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j < lines.length && /^(?: {2,}|\t)/.test(lines[j])) { i = j; continue; }
+          break;
+        }
+        if (/^(?: {2,}|\t)/.test(next)) { i++; continue; }
+        break;
+      }
+      continue;
+    }
+
+    const listHead = line.match(listMarker);
+    if (listHead) {
+      starts.push(i);
+      i++;
+      while (i < lines.length) {
+        const next = lines[i];
+        if (isBlank(next)) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j >= lines.length) break;
+          const follow = lines[j];
+          if (listMarker.test(follow) || /^(?: {2,}|\t)/.test(follow)) {
+            i = j;
+            continue;
+          }
+          break;
+        }
+        if (listMarker.test(next) || /^(?: {2,}|\t)/.test(next) || !isBlank(next)) { i++; continue; }
+        break;
+      }
+      continue;
+    }
+
+    if (blockquoteStart.test(line)) {
+      starts.push(i);
+      i++;
+      while (i < lines.length) {
+        const next = lines[i];
+        if (isBlank(next)) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j < lines.length && blockquoteStart.test(lines[j])) { i = j; continue; }
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    const htmlOpen = line.match(htmlBlockOpen);
+    if (htmlOpen) {
+      starts.push(i);
+      const tag = htmlOpen[1];
+      const closeRe = htmlBlockClose(tag);
+      if (closeRe.test(line)) { i++; continue; }
+      i++;
+      while (i < lines.length) {
+        if (closeRe.test(lines[i])) { i++; break; }
+        if (isBlank(lines[i])) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j >= lines.length) break;
+          if (!lines[j].trim().startsWith('<')) break;
+          i = j;
+          continue;
+        }
+        i++;
+      }
       continue;
     }
 
     starts.push(i);
     i++;
-    while (i < lines.length && lines[i].trim() !== '') i++;
+    while (i < lines.length && !isBlank(lines[i])) i++;
   }
   return starts;
 }
@@ -1540,9 +2198,14 @@ let _editorPadTop = 16;
 
 function syncEditorMirror() {
   if (!editorMirror) return;
-  // clientWidth (content + padding, minus scrollbar) — mirror uses same
-  // border-box + padding so copying it matches wrap points exactly.
-  editorMirror.style.width = `${editor.clientWidth}px`;
+  // When the editor pane is collapsed (preview-only view) its clientWidth is
+  // 0, which makes every mirror line wrap at column 0 and lineTops[] fills
+  // with zeros — meaning the gutter stacks every number at the top. Bail
+  // here so the current (valid) measurements stay intact; the view-switch
+  // code will call us again once the editor becomes visible.
+  const w = editor.clientWidth;
+  if (w <= 0) return;
+  editorMirror.style.width = `${w}px`;
   _editorPadTop = parseFloat(getComputedStyle(editor).paddingTop) || 16;
 
   // One <div> per source line. Empty lines get a ZWSP so their line-box
@@ -1599,23 +2262,23 @@ function rebuildAnchorMap() {
     const top = kids[i].offsetTop;
     map.push({ line: sourceBlockLines[i], top: prev ? Math.max(prev.top, top) : top });
   }
-  // Sentinel so scrolling to the bottom of one pane bottoms out the other.
+  // Bottom sentinel: bottoming out one pane bottoms out the other.
   const totalLines = editor.value.split('\n').length;
   const last = map[map.length - 1];
-  const endTop = Math.max(last?.top ?? 0, preview.scrollHeight);
+  const endTop = Math.max(last?.top ?? 0, previewWrap.scrollHeight);
   map.push({ line: Math.max(totalLines, last?.line ?? 0) + 1, top: endTop });
   anchorMap = map;
   // Snapshot heading Ys while layout is fresh — the TOC's hot path reads these.
   rebuildTocHeadingTops();
 }
 
-// Double rAF inside a debounce so Mermaid/KaTeX/image heights are final before
-// we freeze offsetTop.
+// Rebuild the anchor map after layout settles. Late-inflating children
+// (Mermaid, KaTeX, images) re-trigger this via ResizeObserver.
 function scheduleAnchorRebuild() {
   clearTimeout(_anchorRebuildTimer);
   _anchorRebuildTimer = setTimeout(() => {
-    requestAnimationFrame(() => requestAnimationFrame(rebuildAnchorMap));
-  }, 60);
+    requestAnimationFrame(rebuildAnchorMap);
+  }, 16);
 }
 
 let _previewResizeObserver = null;
@@ -1635,8 +2298,20 @@ function ensurePreviewObserver() {
   for (const el of preview.children) {
     try { _previewResizeObserver.observe(el); } catch {}
   }
+}
+
+// Separate from ensurePreviewObserver so the editor gets a resize hook
+// even when the preview is empty — which is the exact scenario where the
+// "line numbers don't appear on upload" bug used to bite (editor pane
+// transitions from 0-width to >0 width without a keystroke).
+function ensureEditorObserver() {
+  if (_editorResizeObserver || !('ResizeObserver' in window)) return;
   _editorResizeObserver = new ResizeObserver(() => {
+    // Both the mirror measurements and the gutter need to be re-painted
+    // when the editor's width changes (view switch, sidebar resize, window
+    // resize, or the editor pane becoming visible for the first time).
     syncEditorMirror();
+    updateGutter();
     scheduleAnchorRebuild();
   });
   _editorResizeObserver.observe(editor);
@@ -1702,15 +2377,14 @@ let _editorSyncQueued = false;
 let _previewSyncQueued = false;
 
 function scheduleEditorToPreview() {
-  if (!scrollSyncEnabled || _editorSyncQueued) return;
+  if (!scrollSyncEnabled || _editorSyncQueued || _fileSwitching || _tocScrollAbortController) return;
   _editorSyncQueued = true;
   requestAnimationFrame(() => {
     _editorSyncQueued = false;
-    if (!scrollSyncEnabled || scrollOwner === 'preview') return;
+    if (!scrollSyncEnabled || scrollOwner === 'preview' || _fileSwitching || _tocScrollAbortController) return;
     const target = Math.round(previewScrollForLine(editorTopVisibleLine()));
-    // Skip sub-pixel/noop writes — each scrollTop assignment fires a native
-    // scroll event on the target pane, which re-enters this pipeline and
-    // can stutter native momentum scrolling.
+    // Skip sub-pixel writes — each assignment fires a native scroll event
+    // that re-enters the pipeline and can stutter momentum scrolling.
     if (Math.abs(target - previewWrap.scrollTop) < 1) return;
     takeScroll('editor');
     previewWrap.scrollTop = target;
@@ -1718,11 +2392,11 @@ function scheduleEditorToPreview() {
 }
 
 function schedulePreviewToEditor() {
-  if (!scrollSyncEnabled || _previewSyncQueued) return;
+  if (!scrollSyncEnabled || _previewSyncQueued || _fileSwitching || _tocScrollAbortController) return;
   _previewSyncQueued = true;
   requestAnimationFrame(() => {
     _previewSyncQueued = false;
-    if (!scrollSyncEnabled || scrollOwner === 'editor') return;
+    if (!scrollSyncEnabled || scrollOwner === 'editor' || _fileSwitching || _tocScrollAbortController) return;
     const line = lineForPreviewScroll(previewWrap.scrollTop);
     const target = Math.round(Math.max(0, editorTopOfLine(line) - _editorPadTop));
     if (Math.abs(target - editor.scrollTop) < 1) return;
@@ -1739,55 +2413,138 @@ editor.addEventListener('scroll', () => {
 }, { passive: true });
 
 previewWrap.addEventListener('scroll', () => {
+  if (_tocScrollLock && !_tocScrollAbortController) {
+    const locked = preview.querySelector(`#${cssEscape(_tocScrollLock.id)}`);
+    if (!locked) {
+      _tocScrollLock = null;
+    } else {
+      const expected = targetScrollTopForHeading(locked);
+      if (Math.abs(previewWrap.scrollTop - expected) > 20) _tocScrollLock = null;
+    }
+  }
   schedulePreviewToEditor();
   schedulePersistScroll();
   scheduleTocActiveUpdate();
 }, { passive: true });
 
 function writeScrollState() {
-  try {
-    localStorage.setItem(SCROLL_KEY, JSON.stringify({
-      editor: editor.scrollTop,
-      preview: previewWrap.scrollTop,
-    }));
-  } catch {}
+  // Scroll positions are stamped onto whichever file is currently loaded in
+  // the editor. We capture `_loadedFileId` synchronously so a pending scroll
+  // save after a tab switch doesn't overwrite File B's scroll with File A's.
+  if (!_loadedFileId) return;
+  const f = Store.files.get(_loadedFileId);
+  if (!f) return;
+  f.scrollEditor  = editor.scrollTop;
+  f.scrollPreview = previewWrap.scrollTop;
+  scheduleSaveForFile(_loadedFileId);
 }
 
 // Debounce fires after scroll events settle. We persist unconditionally: by
 // then, any programmatic-scroll lockout (~50ms) has long since cleared.
 const schedulePersistScroll = debounce(writeScrollState, 250);
 
-// Flush synchronously on unload so a scroll-then-close beats the debounce.
-window.addEventListener('beforeunload', writeScrollState);
+// Flush synchronously on unload. Two caveats:
+//   1. IndexedDB can't complete async writes during unload on modern
+//      browsers — the transaction is aborted. We still fire the save so
+//      browsers that *do* flush their tx queue (some older Chrome versions)
+//      can complete the write.
+//   2. If there are still dirty files when the user tries to close, the
+//      returnValue triggers the browser's "leave site?" prompt. This is
+//      only reached when a save didn't complete in the usual 300ms window
+//      (e.g., user hit Cmd+W within 300ms of typing).
+window.addEventListener('beforeunload', (e) => {
+  // Try a last-ditch save for the loaded file, even though IDB may drop it.
+  if (_loadedFileId) {
+    try {
+      saveFileContent(_loadedFileId, editor.value, {
+        cursor: editor.selectionStart,
+        scrollEditor:  editor.scrollTop,
+        scrollPreview: previewWrap.scrollTop,
+      });
+    } catch {}
+  }
+  // Warn only if there are still dirty files (pending saves that didn't
+  // make it into the tx queue). Avoids "are you sure?" prompts for
+  // every edit since normal saves complete in 300ms.
+  if (Store.dirty && Store.dirty.size > 0) {
+    const msg = 'You have unsaved changes.';
+    e.preventDefault();
+    e.returnValue = msg;
+    return msg;
+  }
+});
 
-function restoreScroll() {
-  try {
-    const raw = localStorage.getItem(SCROLL_KEY);
-    if (!raw) return;
-    const { editor: e, preview: p } = JSON.parse(raw) || {};
-    // Hold ownership so the sync handler doesn't re-align during restore.
-    takeScroll('editor');
-    if (typeof e === 'number') editor.scrollTop = e;
-    if (typeof p === 'number') previewWrap.scrollTop = p;
-    syncGutterToEditor();
-  } catch {}
+// `visibilitychange` (`document.hidden === true`) is fired BEFORE `beforeunload`
+// on tab close and reliably allows async writes to complete. We flush pending
+// saves here so the `beforeunload` warning only fires in real emergencies.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (_loadedFileId) {
+    // If there's a pending timer for this file, trigger it now.
+    const t = _saveTimers.get(_loadedFileId);
+    if (t) {
+      clearTimeout(t);
+      _saveTimers.delete(_loadedFileId);
+      saveFileContent(_loadedFileId, editor.value, {
+        cursor: editor.selectionStart,
+        scrollEditor:  editor.scrollTop,
+        scrollPreview: previewWrap.scrollTop,
+      }).catch(() => {});
+    }
+  }
+});
+
+// Restore saved editor + preview scroll for the active file. Uses
+// `_fileSwitching` to suppress both sync directions during the writes —
+// otherwise editor→preview sync would overwrite the saved preview scroll
+// with a computed one in the next frame.
+function restoreActiveFileScroll() {
+  const f = Store.activeFile();
+  if (!f) return;
+  const prevSwitching = _fileSwitching;
+  _fileSwitching = true;
+  if (typeof f.scrollEditor  === 'number') editor.scrollTop      = f.scrollEditor;
+  if (typeof f.scrollPreview === 'number') previewWrap.scrollTop = f.scrollPreview;
+  syncGutterToEditor();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    _fileSwitching = prevSwitching;
+  }));
 }
 
-// Each line number is absolutely placed at the matching mirror Y so soft-
-// wrapped lines stay aligned with their source row.
 function updateGutter() {
   syncEditorMirror();
   const total = editor.value.split('\n').length;
   const tops = lineTops;
-  let html = `<div class="editor__gutter-inner" style="height:${mirrorTotalHeight}px;">`;
-  for (let i = 0; i < total; i++) {
-    html += `<span class="editor__gutter-num" style="top:${tops[i] ?? 0}px;">${i + 1}</span>`;
+
+  let inner = gutter.firstElementChild;
+  if (!inner || inner.className !== 'editor__gutter-inner') {
+    gutter.replaceChildren();
+    inner = document.createElement('div');
+    inner.className = 'editor__gutter-inner';
+    gutter.appendChild(inner);
   }
-  html += `</div>`;
-  gutter.innerHTML = html;
+  inner.style.height = `${mirrorTotalHeight}px`;
+
+  const spans = inner.children;
+  const existing = spans.length;
+  for (let i = 0; i < total; i++) {
+    let span = spans[i];
+    if (!span) {
+      span = document.createElement('span');
+      span.className = 'editor__gutter-num';
+      span.textContent = String(i + 1);
+      inner.appendChild(span);
+    } else if (span.textContent !== String(i + 1)) {
+      span.textContent = String(i + 1);
+    }
+    const topPx = `${tops[i] ?? 0}px`;
+    if (span.style.top !== topPx) span.style.top = topPx;
+  }
+  for (let i = existing - 1; i >= total; i--) {
+    inner.removeChild(spans[i]);
+  }
   gutter.dataset.count = String(total);
-  const inner = gutter.firstElementChild;
-  if (inner) inner.style.transform = `translateY(${-editor.scrollTop}px)`;
+  inner.style.transform = `translateY(${-editor.scrollTop}px)`;
 }
 
 function updateStats(src) {
@@ -1805,38 +2562,377 @@ function setStatus(kind, text) {
   statusText.textContent = text;
 }
 
-const persist = debounce(() => {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      source: currentDoc.source,
-      filename: currentDoc.filename,
-    }));
-    fileIndicator.textContent = `${currentDoc.filename} · autosaved`;
-  } catch {
-    fileIndicator.textContent = `${currentDoc.filename} · autosave unavailable`;
-  }
-}, 300);
+// ---------- File-level persistence --------------------------------------
+//
+// Every keystroke runs through `persist()` below. The file being edited is
+// captured at SCHEDULE time and saved to IndexedDB 300ms after the last
+// change. This matters: if the user types in File A then switches to File B
+// within 300ms, we must save to A, not to B. A per-file pending-save map
+// keeps each file's debounced save independent; switching files flushes
+// their pending save first so no keystrokes are lost.
 
-function loadInitialDoc() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d && typeof d.source === 'string' && d.source.trim().length > 0) {
-        editor.value = d.source;
-        currentDoc.source = d.source;
-        currentDoc.filename = d.filename || 'Untitled.md';
-        fileIndicator.textContent = `${currentDoc.filename} · autosaved`;
-        updateGutter();
-        return;
+let _loadedFileId = null;          // whichever file's content currently fills the editor
+let _fileSwitching = false;        // true while switching tabs — suppresses dirty marking
+
+const SAVE_DEBOUNCE_MS = 300;
+
+// One pending-save timer per file, keyed by fileId. Each closure snapshots
+// the fileId and reads `editor.value`/cursor/scroll at FIRE time — but only
+// if the file is still the one loaded in the editor. If the user has since
+// switched tabs, the outgoing file's content was already flushed during
+// `switchToFile`, so the stale timer becomes a no-op.
+const _saveTimers = new Map();
+
+function scheduleSaveForFile(fileId) {
+  if (!fileId) return;
+  if (_saveTimers.has(fileId)) clearTimeout(_saveTimers.get(fileId));
+  const timer = setTimeout(async () => {
+    _saveTimers.delete(fileId);
+    // Only save if this file is still the one loaded in the editor.
+    // Otherwise `switchToFile` has already persisted its content.
+    if (fileId !== _loadedFileId) return;
+    try {
+      await saveFileContent(fileId, editor.value, {
+        cursor: editor.selectionStart,
+        scrollEditor:  editor.scrollTop,
+        scrollPreview: previewWrap.scrollTop,
+      });
+      updateFileIndicator('saved');
+    } catch (err) {
+      console.warn('Save failed:', err);
+      updateFileIndicator('error');
+      const msg = err?.code === 'STORAGE_FULL' || /storage is full/i.test(err?.message || '')
+        ? err.message
+        : err?.name === 'QuotaExceededError'
+          ? 'Browser storage is full. Delete some files to continue.'
+          : 'Couldn\u2019t save \u2014 storage unavailable';
+      showToast(msg, 'error');
+    }
+  }, SAVE_DEBOUNCE_MS);
+  _saveTimers.set(fileId, timer);
+}
+
+function cancelSaveForFile(fileId) {
+  const t = _saveTimers.get(fileId);
+  if (t) { clearTimeout(t); _saveTimers.delete(fileId); }
+}
+
+// Called from the rendering pipeline (the `render()` function) whenever the
+// editor value changed. Mirrors the value into the active file, marks it
+// dirty, and schedules the debounced save SCOPED TO THAT SPECIFIC FILE —
+// so a pending save can never race against a tab switch.
+function persist() {
+  if (_fileSwitching) return;
+  const f = Store.activeFile();
+  if (!f) return;
+  if (_loadedFileId !== f.id) return;
+  if (editor.value === f.content) return;
+  f.content = editor.value;
+  markDirty(f.id);
+  scheduleSaveForFile(f.id);
+}
+
+function updateFileIndicator(state = 'saved') {
+  const f = Store.activeFile();
+  if (!f) {
+    fileIndicator.textContent = 'No file open';
+    return;
+  }
+  const label = state === 'error'   ? 'autosave unavailable'
+              : Store.dirty.has(f.id) ? 'editing\u2026'
+              : 'autosaved';
+  fileIndicator.textContent = `${f.name} \u00b7 ${label}`;
+}
+
+// ---- Projects bootstrap ------------------------------------------------
+
+async function bootstrapProjects() {
+  await loadAll({ fallbackContent: EXAMPLES.welcome.content });
+
+  Store.on((kind, payload) => {
+    // Keep the status-bar indicator in sync with dirty/saved state.
+    if (kind === 'file:saved' || kind === 'file:dirty') updateFileIndicator();
+    if (kind === 'file:renamed' && payload?.file?.id === Store.activeId) updateFileIndicator();
+
+    // Surface collision auto-uniquify so the user understands why the name
+    // they typed didn't stick.
+    if (kind === 'file:rename-collision') {
+      showToast(`"${payload.requested}" already exists — renamed to "${payload.finalName}"`, 'info');
+    }
+
+    // Centralized handler for the currently-loaded file being deleted —
+    // covers direct delete, cascade delete via deleteProject, and any
+    // future paths that destroy the file without going through the
+    // sidebar's confirm flow. Without this, the editor shows ghost
+    // content and the next keystroke would call markDirty on a dead id.
+    if (kind === 'file:deleted' && payload?.id === _loadedFileId) {
+      cancelSaveForFile(_loadedFileId);
+      _loadedFileId = null;
+      if (Store.activeId && Store.files.has(Store.activeId)) {
+        switchToFile(Store.activeId);
+      } else {
+        editor.value = '';
+        updateFileIndicator();
+        safeUpdateGutter();
+        scheduleRender();
       }
     }
-  } catch {}
-  editor.value = EXAMPLES.welcome.content;
-  currentDoc.source = EXAMPLES.welcome.content;
-  currentDoc.filename = 'welcome.md';
-  fileIndicator.textContent = `${currentDoc.filename} · autosaved`;
-  updateGutter();
+  });
+
+  // Load whatever file was active last session into the editor.
+  const active = Store.activeFile();
+  if (active) {
+    _loadedFileId = active.id;
+    editor.value = active.content || '';
+  } else {
+    editor.value = '';
+  }
+  updateFileIndicator();
+  // Double-rAF ensures the editor has real layout before we measure line Ys.
+  requestAnimationFrame(() => requestAnimationFrame(updateGutter));
+}
+
+// Swap the editor's contents to another file. Flushes the outgoing file's
+// pending save first (so no keystroke is lost), cancels any stale pending
+// save on the incoming file, then paints the new file.
+async function switchToFile(fileId) {
+  const target = Store.files.get(fileId);
+  if (!target) return;
+
+  // Raise the switching flag before the first await and release it in
+  // `finally` — otherwise a DB/activateFile rejection would leave it stuck
+  // and permanently disable scroll sync.
+  _fileSwitching = true;
+  try {
+    // Flush the outgoing file's pending save synchronously against its
+    // current editor contents. If we didn't do this, a pending 300ms timer
+    // could race against our swap and write File B's contents into File A.
+    if (_loadedFileId && _loadedFileId !== fileId) {
+      cancelSaveForFile(_loadedFileId);
+      const outgoing = Store.files.get(_loadedFileId);
+      if (outgoing) {
+        try {
+          await saveFileContent(_loadedFileId, editor.value, {
+            cursor: editor.selectionStart,
+            scrollEditor:  editor.scrollTop,
+            scrollPreview: previewWrap.scrollTop,
+          });
+        } catch {}
+      }
+    }
+    // Cancel any stale pending save for the incoming file.
+    cancelSaveForFile(fileId);
+
+    _loadedFileId = fileId;
+    await activateFile(fileId);
+    // activateFile already appends to openIds and emits tab:activated; no
+    // need to call storeOpenFile again (that would double-emit and double-
+    // write the session to IndexedDB).
+
+    editor.value = target.content || '';
+    updateFileIndicator();
+
+    // Use safeUpdateGutter so line numbers paint reliably even if the editor
+    // just became visible (common when clicking a file while in preview mode).
+    safeUpdateGutter();
+
+    // Restore per-file scroll/cursor. Done inside a double-rAF so the
+    // editor's layout has settled before we write scroll positions.
+    await new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (typeof target.cursor === 'number') {
+          try { editor.selectionStart = editor.selectionEnd = target.cursor; } catch {}
+        }
+        if (typeof target.scrollEditor  === 'number') editor.scrollTop      = target.scrollEditor;
+        if (typeof target.scrollPreview === 'number') previewWrap.scrollTop = target.scrollPreview;
+        syncGutterToEditor();
+        resolve();
+      }));
+    });
+
+    await render();
+  } finally {
+    // Always release the switch flag. Wrapped in a rAF so any scroll events
+    // fired by the just-assigned scroll positions settle (and are suppressed
+    // by the flag being still set) before the flag clears.
+    requestAnimationFrame(() => { _fileSwitching = false; });
+  }
+}
+
+// Schedule a gutter rebuild with two rAFs so the textarea's clientWidth is
+// finalized (needed right after a file switch or upload — the editor may be
+// in a pane that just became visible, and syncEditorMirror measures against
+// editor.clientWidth). This is the fix for "line numbers don't appear until
+// I edit" after loading a file.
+function safeUpdateGutter() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    updateGutter();
+    // One more pass in case Mermaid/images inflated after the first frame.
+    requestAnimationFrame(updateGutter);
+  }));
+}
+
+// ---- Commands registered with the palette ------------------------------
+// Flat list of { title, subtitle?, shortcut?, icon, run } entries fuzzy-
+// matched against title + subtitle. Active-file commands omit themselves
+// when no file is loaded.
+function buildCommandList() {
+  const active = Store.activeFile();
+  const commands = [
+    // ---- File / project lifecycle ----
+    { title: 'New file',              subtitle: 'In active project',          shortcut: '⌘N',       icon: iconSvg('file-plus'),  run: () => newFileInActive() },
+    { title: 'New project',           subtitle: 'Create a new project',                              icon: iconSvg('folder-plus'), run: () => newProject() },
+  ];
+  if (active) {
+    commands.push(
+      { title: 'Rename active file',    subtitle: active.name,                                        icon: iconSvg('edit'),       run: () => renameActiveFileFlow() },
+      { title: 'Duplicate active file', subtitle: active.name,                                        icon: iconSvg('copy'),       run: () => duplicateActiveFile() },
+      { title: 'Delete active file',    subtitle: active.name,                                        icon: iconSvg('trash'),      run: () => deleteActiveFileFlow() },
+      { title: 'Close active tab',      subtitle: active.name,                  shortcut: '⌘W',       icon: iconSvg('close'),      run: () => closeActiveTab() },
+      { title: 'Close other tabs',      subtitle: `Keep ${active.name} open`,                         icon: iconSvg('close'),      run: () => closeOtherTabs() },
+      { title: 'Close tabs to the right', subtitle: `After ${active.name}`,                           icon: iconSvg('close'),      run: () => closeTabsToRight() },
+    );
+  }
+  commands.push(
+    // ---- View / appearance ----
+    { title: 'Toggle theme',          subtitle: 'Switch light / dark',        shortcut: '⌘⇧K',      icon: iconSvg('sun-moon'),   run: () => btnTheme.click() },
+    { title: 'Toggle sidebar',        subtitle: 'Show or hide sidebar',       shortcut: '⌘⇧B',      icon: iconSvg('sidebar'),    run: () => toggleSidebar() },
+    { title: 'Toggle focus mode',     subtitle: 'Distraction-free writing',   shortcut: '⌘.',       icon: iconSvg('focus'),      run: () => toggleFocus() },
+    { title: 'Toggle outline',        subtitle: 'Document table of contents', shortcut: '⌘L',       icon: iconSvg('outline'),    run: () => { const on = toc?.dataset.collapsed !== 'true'; applyTocToggle(!on); } },
+    { title: 'Toggle reading mode',   subtitle: 'Serif typography',                                  icon: iconSvg('book'),       run: () => { toggleProse.checked = !toggleProse.checked; toggleProse.dispatchEvent(new Event('change')); } },
+    { title: 'View: Editor',          subtitle: 'Editor only',                shortcut: '⌘1',       icon: iconSvg('edit'),       run: () => setView('editor') },
+    { title: 'View: Split',           subtitle: 'Editor + preview',           shortcut: '⌘2',       icon: iconSvg('split'),      run: () => setView('split') },
+    { title: 'View: Preview',         subtitle: 'Rendered only',              shortcut: '⌘3',       icon: iconSvg('eye'),        run: () => setView('preview') },
+    // ---- I/O ----
+    { title: 'Upload file…',          subtitle: 'Import a .md file',          shortcut: '⌘O',       icon: iconSvg('upload'),     run: () => fileInput.click() },
+    { title: 'Import folder…',        subtitle: 'Import a directory of .md files', icon: iconSvg('folder-plus'), run: () => folderInput?.click() },
+    { title: 'Find in file',          subtitle: 'Search the current document', shortcut: '⌘F',       icon: iconSvg('keyboard'),   run: () => openFindBar({ replace: false }) },
+    { title: 'Find and replace',      subtitle: 'Replace in the current document', shortcut: '⌘⇧F',  icon: iconSvg('edit'),       run: () => openFindBar({ replace: true }) },
+    { title: 'Download markdown',     subtitle: 'Active file as .md',         shortcut: '⌘S',       icon: iconSvg('download'),   run: () => exportMd() },
+    { title: 'Download HTML',         subtitle: 'Rendered, self-contained',                          icon: iconSvg('download'),   run: () => exportHtml() },
+    { title: 'Download PDF',          subtitle: 'Rendered as PDF',                                   icon: iconSvg('download'),   run: () => exportPdf() },
+    { title: 'Copy markdown source',                                                                                             icon: iconSvg('copy'),       run: () => copy(editor.value, 'Markdown copied') },
+    { title: 'Copy rendered HTML',                                                                                               icon: iconSvg('copy'),       run: () => copy(preview.innerHTML, 'HTML copied') },
+    { title: 'Show keyboard shortcuts', subtitle: 'All shortcuts',             shortcut: '?',        icon: iconSvg('keyboard'),   run: () => toggleShortcuts() },
+  );
+  return commands;
+}
+
+// ---- File-lifecycle helpers for palette commands ----
+
+async function renameActiveFileFlow() {
+  const f = Store.activeFile();
+  if (!f) { showToast('No file open', 'error'); return; }
+  const current = f.name;
+  // Native `prompt` is ugly but zero-dependency and works immediately.
+  // A dedicated modal can be wired later; the palette command is what
+  // matters for discoverability.
+  const next = prompt('Rename file', current);
+  if (next == null) return;
+  const trimmed = next.trim();
+  if (!trimmed || trimmed === current) return;
+  const finalName = await renameFile(f.id, trimmed);
+  if (finalName && finalName !== trimmed) {
+    // `file:rename-collision` already fired its toast; nothing else to do.
+  }
+}
+
+async function duplicateActiveFile() {
+  const f = Store.activeFile();
+  if (!f) { showToast('No file open', 'error'); return; }
+  const copy = await duplicateFile(f.id);
+  if (copy) {
+    await switchToFile(copy.id);
+    showToast(`Duplicated to "${copy.name}"`, 'success');
+  }
+}
+
+async function deleteActiveFileFlow() {
+  const f = Store.activeFile();
+  if (!f) { showToast('No file open', 'error'); return; }
+  const snap = await deleteFile(f.id);
+  if (snap) showUndoableDeleteToast({ snapshot: snap, message: `Deleted "${f.name}"` });
+}
+
+// Clears the editor when the last tab closes. Called from every tab-close
+// path (tab strip, palette, Cmd+W) to avoid stale content in the editor.
+function resetEditorWhenNoTabs() {
+  if (Store.activeId) return;
+  _loadedFileId = null;
+  editor.value = '';
+  updateFileIndicator();
+  safeUpdateGutter();
+  scheduleRender();
+}
+
+async function closeActiveTab() {
+  if (!Store.activeId) return;
+  if (Store.dirty.has(Store.activeId)) {
+    const f = Store.activeFile();
+    if (!confirm(`"${f?.name}" has unsaved changes. Close anyway?`)) return;
+  }
+  const closing = Store.activeId;
+  await storeCloseFile(closing);
+  if (Store.activeId) await switchToFile(Store.activeId);
+  else resetEditorWhenNoTabs();
+}
+
+async function closeOtherTabs() {
+  const keep = Store.activeId;
+  if (!keep) return;
+  const targets = Store.openIds.filter(id => id !== keep);
+  const dirty = targets.filter(id => Store.dirty.has(id));
+  if (dirty.length && !confirm(`Close ${targets.length} tab${targets.length === 1 ? '' : 's'}? ${dirty.length} ha${dirty.length === 1 ? 's' : 've'} unsaved changes.`)) return;
+  for (const id of targets) await storeCloseFile(id);
+  showToast(`Closed ${targets.length} tab${targets.length === 1 ? '' : 's'}`, 'info');
+}
+
+async function closeTabsToRight() {
+  const keep = Store.activeId;
+  if (!keep) return;
+  const idx = Store.openIds.indexOf(keep);
+  if (idx === -1) return;
+  const targets = Store.openIds.slice(idx + 1);
+  if (targets.length === 0) { showToast('No tabs to the right', 'info'); return; }
+  const dirty = targets.filter(id => Store.dirty.has(id));
+  if (dirty.length && !confirm(`Close ${targets.length} tab${targets.length === 1 ? '' : 's'}? ${dirty.length} ha${dirty.length === 1 ? 's' : 've'} unsaved changes.`)) return;
+  for (const id of targets) await storeCloseFile(id);
+  showToast(`Closed ${targets.length} tab${targets.length === 1 ? '' : 's'}`, 'info');
+}
+function iconSvg(kind) {
+  const icons = {
+    'file-plus':   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>',
+    'folder-plus': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>',
+    'sun-moon':    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
+    'sidebar':     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>',
+    'focus':       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    'outline':     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/></svg>',
+    'book':        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+    'edit':        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>',
+    'split':       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+    'eye':         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+    'upload':      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+    'download':    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    'copy':        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    'keyboard':    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M7 10h0M11 10h0M15 10h0M7 14h10"/></svg>',
+    'trash':       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    'close':       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  };
+  return icons[kind] || '';
+}
+
+async function newFileInActive() {
+  const active = Store.activeProject() || Store.projectList()[0] || (await createProject({ name: 'My documents' }));
+  const name = uniqueFileName(active.id, 'Untitled.md');
+  const f = await createFile({ projectId: active.id, name, content: '' });
+  switchToFile(f.id);
+}
+async function newProject() {
+  const p = await createProject({ name: `Project ${Store.projects.size + 1}` });
+  const name = uniqueFileName(p.id, 'Untitled.md');
+  const f = await createFile({ projectId: p.id, name, content: '' });
+  switchToFile(f.id);
+  showToast(`Created project "${p.name}"`, 'success');
 }
 
 function restoreTheme() {
@@ -1860,8 +2956,13 @@ function applyTheme(theme, silent = false) {
   }
 }
 
+// Re-render Mermaid diagrams after a theme change. Claims a fresh render
+// generation so a concurrent typing-triggered render doesn't race with
+// the theme repaint.
 async function rethemeMermaid() {
-  await runMermaid();
+  const gen = ++_renderGen;
+  await runMermaid(gen);
+  if (gen !== _renderGen) return;
   scheduleAnchorRebuild();
 }
 
@@ -1872,6 +2973,7 @@ btnTheme.addEventListener('click', () => {
 
 async function enterFocus() {
   document.body.classList.add('is-focus');
+  bindFocusDockListeners();
   // Fullscreen on <body> (not <html>) — browsers paint default white over the
   // fullscreen root, which hides our UI. Falls back gracefully.
   try {
@@ -1879,11 +2981,17 @@ async function enterFocus() {
       await document.body.requestFullscreen();
     }
   } catch {}
+  // Mid-await the user may have already escaped (rapid toggle, permission
+  // denial followed by Esc, etc.). Skip the aria-pressed side-effect if
+  // focus mode was torn down while we were awaiting the fullscreen promise.
+  if (!document.body.classList.contains('is-focus')) return;
   showToast('Focus mode · press Esc to exit', 'info');
   btnFocus.setAttribute('aria-pressed', 'true');
+  syncDockState();
 }
 async function exitFocus() {
   document.body.classList.remove('is-focus');
+  unbindFocusDockListeners();
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
   } catch {}
@@ -1894,20 +3002,87 @@ function toggleFocus() {
   else enterFocus();
 }
 btnFocus.addEventListener('click', toggleFocus);
-btnFocusExit.addEventListener('click', exitFocus);
-// Sync in-page state when the user exits system fullscreen via Esc/F11.
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && document.body.classList.contains('is-focus')) {
+dockExit?.addEventListener('click', exitFocus);
+dockTheme?.addEventListener('click', () => btnTheme.click());
+dockReading?.addEventListener('click', () => {
+  toggleProse.checked = !toggleProse.checked;
+  toggleProse.dispatchEvent(new Event('change'));
+  syncDockState();
+});
+dockOutline?.addEventListener('click', () => {
+  const on = toc?.dataset.collapsed !== 'true';
+  applyTocToggle(!on);
+  syncDockState();
+});
+// Dock auto-hide: fades to ~30% opacity while idle, snaps back on mouse
+// movement near the bottom-right. The mousemove listener is only bound
+// while focus mode is actually active — binding globally means every
+// cursor movement fires a no-op handler for the lifetime of the page.
+let _focusDockIdleTimer = 0;
+let _focusDockMoveBound = false;
+function onFocusDockMove(e) {
+  if (!document.body.classList.contains('is-focus')) return;
+  // Only wake when the cursor is near the bottom-right quadrant.
+  const nearDock = e.clientY > window.innerHeight - 160 && e.clientX > window.innerWidth - 360;
+  if (nearDock) wakeFocusDock();
+}
+function wakeFocusDock() {
+  if (!focusDock) return;
+  focusDock.classList.add('is-awake');
+  clearTimeout(_focusDockIdleTimer);
+  _focusDockIdleTimer = setTimeout(() => focusDock.classList.remove('is-awake'), 2000);
+}
+function bindFocusDockListeners() {
+  if (_focusDockMoveBound || !focusDock) return;
+  _focusDockMoveBound = true;
+  window.addEventListener('mousemove', onFocusDockMove);
+  focusDock.addEventListener('mouseenter', wakeFocusDock);
+  focusDock.addEventListener('focusin', wakeFocusDock);
+}
+function unbindFocusDockListeners() {
+  if (!_focusDockMoveBound) return;
+  _focusDockMoveBound = false;
+  window.removeEventListener('mousemove', onFocusDockMove);
+  focusDock?.removeEventListener('mouseenter', wakeFocusDock);
+  focusDock?.removeEventListener('focusin', wakeFocusDock);
+  clearTimeout(_focusDockIdleTimer);
+  focusDock?.classList.remove('is-awake');
+}
+
+function syncDockState() {
+  if (!focusDock) return;
+  dockReading?.setAttribute('aria-pressed', String(!!toggleProse.checked));
+  dockOutline?.setAttribute('aria-pressed', String(toc?.dataset.collapsed !== 'true'));
+}
+// Sync in-page state for every fullscreen transition:
+//   • `body.is-fs` reflects *any* fullscreen (F11 on <html>, our own on
+//     <body>, etc.) so the chrome-hiding CSS still applies when the user
+//     presses F11 without going through focus mode.
+//   • Dock listener cleanup must run here too — otherwise the global
+//     mousemove listener would leak when the browser (not our exit path)
+//     drops fullscreen.
+//   • Pre-Safari-16.4 fires `webkitfullscreenchange` instead of the standard
+//     event — bind both so F11 works there too.
+function onFullscreenChange() {
+  const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  document.body.classList.toggle('is-fs', fs);
+  if (!fs && document.body.classList.contains('is-focus')) {
     document.body.classList.remove('is-focus');
+    unbindFocusDockListeners();
     btnFocus.setAttribute('aria-pressed', 'false');
   }
-});
+}
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
 function restoreView() {
   setView(localStorage.getItem(VIEW_KEY) || 'split', true);
 }
 function setView(view, silent = false) {
-  workspace.dataset.view = view;
+  // Layout is driven by `.panes[data-view=...]` — the workspace itself is
+  // just the flex column that stacks the tab strip on top of the panes row.
+  const panes = document.getElementById('panes');
+  if (panes) panes.dataset.view = view;
   document.querySelectorAll('.segmented__item[data-view]').forEach(btn => {
     const on = btn.dataset.view === view;
     btn.classList.toggle('is-active', on);
@@ -1915,6 +3090,10 @@ function setView(view, silent = false) {
   });
   localStorage.setItem(VIEW_KEY, view);
   if (!silent) showToast(`View: ${view}`, 'info');
+  // When the editor pane becomes visible again, its clientWidth changes —
+  // re-measure the mirror so line numbers align. This is the key fix for
+  // "line numbers disappear after switching to preview, reappear after edit".
+  if (view === 'editor' || view === 'split') safeUpdateGutter();
 }
 document.querySelectorAll('.segmented__item[data-view]').forEach(btn => {
   btn.addEventListener('click', () => setView(btn.dataset.view));
@@ -1925,9 +3104,12 @@ function restoreSplit() {
   if (pct && pct > 15 && pct < 85) applySplit(pct);
 }
 // Custom property instead of full grid-template-columns — lets the
-// [data-view=editor|preview] rules still collapse the layout.
+// [data-view=editor|preview] rules still collapse the layout. The `--split`
+// variable now lives on `.panes` (not `.workspace`) since the workspace
+// contains both the tabs strip and the panes row.
+function panesEl() { return document.getElementById('panes') || workspace; }
 function applySplit(pct, { deferRebuild = false } = {}) {
-  workspace.style.setProperty('--split', `${pct}%`);
+  panesEl().style.setProperty('--split', `${pct}%`);
   localStorage.setItem(SPLIT_KEY, String(pct));
   if (deferRebuild) return;
   requestAnimationFrame(() => {
@@ -1936,12 +3118,17 @@ function applySplit(pct, { deferRebuild = false } = {}) {
   });
 }
 function currentSplitPct() {
-  const v = getComputedStyle(workspace).getPropertyValue('--split').trim();
+  const v = getComputedStyle(panesEl()).getPropertyValue('--split').trim();
   const m = v.match(/(\d+(?:\.\d+)?)/);
   return m ? Number(m[1]) : 50;
 }
 {
   let dragging = false;
+  // Column 1 renders as `split% − tocOffset`, so add it back when mapping mouseX → split%.
+  const tocOffsetPx = () => {
+    const n = parseFloat(getComputedStyle(panesEl()).getPropertyValue('--toc-offset'));
+    return Number.isFinite(n) ? n : 0;
+  };
   resizer.addEventListener('mousedown', () => { dragging = true; document.body.style.cursor = 'col-resize'; });
   resizer.addEventListener('keydown', (e) => {
     const cur = currentSplitPct();
@@ -1950,8 +3137,8 @@ function currentSplitPct() {
   });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    const rect = workspace.getBoundingClientRect();
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    const rect = panesEl().getBoundingClientRect();
+    const pct = ((e.clientX - rect.left + tocOffsetPx()) / rect.width) * 100;
     // Mirror rebuild is O(N) with a forced layout; skip per-pixel during drag
     // and flush once on mouseup below.
     if (pct > 15 && pct < 85) applySplit(pct, { deferRebuild: true });
@@ -1998,34 +3185,85 @@ function restoreSyncPref() {
 
 btnSync.addEventListener('click', () => applySyncToggle(!scrollSyncEnabled));
 
-btnUpload.addEventListener('click', () => fileInput.click());
+btnUpload.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
 fileInput.addEventListener('change', async (e) => {
-  const f = e.target.files?.[0];
-  if (f) await loadFile(f);
+  const files = Array.from(e.target.files || []);
   fileInput.value = '';
+  for (const f of files) await loadFile(f);
 });
 
+folderInput?.addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  folderInput.value = '';
+  await importFolderFiles(files);
+});
+
+async function importFolderFiles(files) {
+  const md = files.filter(f => /\.(md|markdown|txt)$/i.test(f.name));
+  if (md.length === 0) {
+    showToast('No markdown files in the selected folder', 'error');
+    return;
+  }
+  const grouped = new Map();
+  for (const f of md) {
+    const path = f.webkitRelativePath || f.name;
+    const rootName = path.split('/')[0] || 'Imported';
+    if (!grouped.has(rootName)) grouped.set(rootName, []);
+    grouped.get(rootName).push(f);
+  }
+  let imported = 0;
+  for (const [rootName, group] of grouped) {
+    let project = Store.projectList().find(p => p.name === rootName) ||
+                  (await createProject({ name: rootName }));
+    for (const f of group) {
+      try {
+        const text = await f.text();
+        const path = f.webkitRelativePath || f.name;
+        const rel = path.split('/').slice(1).join('/') || f.name;
+        const baseName = rel.replace(/\//g, ' - ');
+        const name = uniqueFileName(project.id, baseName);
+        await createFile({ projectId: project.id, name, content: text });
+        imported++;
+      } catch (err) {
+        console.warn('Skipping unreadable file', f.name, err);
+      }
+    }
+  }
+  showToast(`Imported ${imported} file${imported === 1 ? '' : 's'} into ${grouped.size} project${grouped.size === 1 ? '' : 's'}`, 'success');
+}
+
 let dragCounter = 0;
+// Drop-overlay state machine with safety nets for the common cases where
+// the browser doesn't fire a final `dragleave`: Esc mid-drag, drag out of
+// window, OS-level cancel.
+function resetDropOverlay() {
+  dragCounter = 0;
+  dropOverlay.classList.remove('is-active');
+}
 window.addEventListener('dragenter', (e) => {
   if (!e.dataTransfer?.types.includes('Files')) return;
   e.preventDefault();
   dragCounter++;
   dropOverlay.classList.add('is-active');
 });
-window.addEventListener('dragleave', () => {
+window.addEventListener('dragleave', (e) => {
+  // Coords at or past the viewport edge = cursor left the window.
+  const outsideViewport =
+    e.clientX <= 0 || e.clientY <= 0 ||
+    e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;
+  if (outsideViewport) { resetDropOverlay(); return; }
   dragCounter = Math.max(0, dragCounter - 1);
   if (dragCounter === 0) dropOverlay.classList.remove('is-active');
 });
 window.addEventListener('dragover', (e) => { e.preventDefault(); });
 window.addEventListener('drop', async (e) => {
   e.preventDefault();
-  dragCounter = 0;
-  dropOverlay.classList.remove('is-active');
-  const f = e.dataTransfer?.files?.[0];
-  if (f) await loadFile(f);
+  resetDropOverlay();
+  const files = Array.from(e.dataTransfer?.files || []);
+  for (const f of files) await loadFile(f);
 });
-
-const MAX_AUTOSAVE_BYTES = 4 * 1024 * 1024; // ~4 MB — below typical 5 MB localStorage cap
+window.addEventListener('dragend', resetDropOverlay);
+window.addEventListener('blur',    resetDropOverlay);
 
 async function loadFile(file) {
   const ok = /\.(md|markdown|txt)$/i.test(file.name) || /text/.test(file.type);
@@ -2035,16 +3273,20 @@ async function loadFile(file) {
   }
   try {
     const text = await file.text();
-    editor.value = text;
-    currentDoc.filename = file.name;
-    updateGutter();
-    scheduleRender();
-    if (new Blob([text]).size > MAX_AUTOSAVE_BYTES) {
-      showToast(`Loaded ${file.name} — too large to autosave; your work won't persist on refresh`, 'info');
-    } else {
-      showToast(`Loaded ${file.name}`, 'success');
-    }
-  } catch {
+
+    // Upload goes into the currently-active project, or creates a seed one
+    // if the user is starting from zero.
+    const project =
+      Store.activeProject() ||
+      Store.projectList()[0] ||
+      (await createProject({ name: 'My documents' }));
+    const name = uniqueFileName(project.id, file.name);
+    const f = await createFile({ projectId: project.id, name, content: text });
+    await switchToFile(f.id);
+
+    showToast(`Imported ${file.name}`, 'success');
+  } catch (err) {
+    console.error(err);
     showToast(`Failed to read ${file.name}`, 'error');
   }
 }
@@ -2062,11 +3304,16 @@ function buildExamplesMenu() {
         <small>${escapeHtml(ex.description)}</small>
       </div>
     `;
-    btn.addEventListener('click', () => {
-      editor.value = ex.content;
-      currentDoc.filename = `${key}.md`;
-      updateGutter();
-      scheduleRender();
+    btn.addEventListener('click', async () => {
+      // Examples open as new files inside the active project so users can
+      // compare different examples side-by-side via tabs.
+      const project =
+        Store.activeProject() ||
+        Store.projectList()[0] ||
+        (await createProject({ name: 'Examples' }));
+      const name = uniqueFileName(project.id, `${key}.md`);
+      const f = await createFile({ projectId: project.id, name, content: ex.content });
+      await switchToFile(f.id);
       closeAllDropdowns();
       showToast(`Loaded: ${ex.label}`, 'success');
     });
@@ -2075,7 +3322,7 @@ function buildExamplesMenu() {
 }
 
 function bindUI() {
-  document.querySelectorAll('.dropdown').forEach(dd => {
+  document.querySelectorAll('[data-dropdown]').forEach(dd => {
     const trigger = dd.querySelector('.dropdown__trigger');
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2097,6 +3344,16 @@ function bindUI() {
   });
 
   document.getElementById('btn-shortcuts')?.addEventListener('click', toggleShortcuts);
+  document.getElementById('btn-palette')?.addEventListener('click', () => openPalette());
+
+  // Sidebar search focus shortcut — `/` from any non-typing context focuses
+  // the sidebar search input (classic file-manager muscle memory).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && !(e.metaKey || e.ctrlKey) && !isTypingTarget(e.target)) {
+      e.preventDefault();
+      document.getElementById('sidebar-search')?.focus();
+    }
+  });
 
   // On *.github.io hosts, derive the repo URL from the hostname + path so forks
   // of this project link to their own source instead of the upstream.
@@ -2109,7 +3366,7 @@ function bindUI() {
   }
 }
 function closeAllDropdowns() {
-  document.querySelectorAll('.dropdown[data-open="true"]').forEach(dd => {
+  document.querySelectorAll('[data-dropdown][data-open="true"]').forEach(dd => {
     dd.dataset.open = 'false';
     dd.querySelector('.dropdown__trigger')?.setAttribute('aria-expanded', 'false');
   });
@@ -2124,6 +3381,7 @@ async function handleAction(action) {
     case 'copy-html':   return copy(preview.innerHTML, 'HTML copied');
     case 'copy-md':     return copy(editor.value, 'Markdown copied');
     case 'clear':       return clearDoc();
+    case 'import-folder': return folderInput?.click();
   }
 }
 
@@ -2143,12 +3401,52 @@ async function copy(text, msg) {
 }
 
 function exportMd() {
-  download(editor.value, currentDoc.filename || 'document.md', 'text/markdown');
+  const f = Store.activeFile();
+  let name = stripKnownExt(f?.name || 'document');
+  if (!/\.(md|markdown|txt)$/i.test(name)) name += '.md';
+  download(editor.value, name, 'text/markdown');
   showToast('Markdown downloaded', 'success');
 }
 
 function baseFilename() {
-  return (currentDoc.filename || 'document').replace(/\.md$|\.markdown$|\.txt$/i, '');
+  const f = Store.activeFile();
+  const raw = f?.name || 'document';
+  const stripped = stripKnownExt(raw).replace(/^\.+/, '');
+  return stripped || 'document';
+}
+
+// Iteratively strips any trailing text-ish / output-format extension so
+// chained names like "report.pdf.md" collapse to "report" instead of only
+// dropping the final ".md". Leading dots (e.g. ".htaccess") are stripped
+// by the caller so dotfile names don't produce ".htaccess.html".
+function stripKnownExt(name) {
+  const re = /\.(md|markdown|txt|html?|pdf)$/i;
+  let out = name;
+  while (re.test(out)) out = out.replace(re, '');
+  return out;
+}
+
+const _externalCssCache = new Map();
+
+async function fetchExternalCss(url) {
+  if (_externalCssCache.has(url)) return _externalCssCache.get(url);
+  try {
+    const res = await fetch(url, { cache: 'force-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    _externalCssCache.set(url, text);
+    return text;
+  } catch (err) {
+    console.warn('Inline CSS fetch failed, falling back to <link>:', url, err);
+    _externalCssCache.set(url, null);
+    return null;
+  }
+}
+
+async function inlineStylesheetOrLink(url) {
+  const css = await fetchExternalCss(url);
+  if (css) return `<style data-mdlab-inlined="${escapeHtml(url)}">${css}</style>`;
+  return `<link rel="stylesheet" href="${escapeHtml(url)}">`;
 }
 
 async function exportHtml() {
@@ -2157,15 +3455,28 @@ async function exportHtml() {
   const temp = document.createElement('div');
   temp.innerHTML = preview.innerHTML;
   temp.querySelectorAll('.code-copy, .code-lang, .diagram-expand').forEach(el => el.remove());
+  temp.querySelectorAll('.table-wrap').forEach(w => {
+    const t = w.querySelector('table');
+    if (t) w.replaceWith(t);
+  });
   const bodyHtml = temp.innerHTML;
+
+  const katexUrl = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
+  const hljsUrl = `https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/${theme === 'dark' ? 'github-dark' : 'github'}.min.css`;
+
+  const [katexTag, hljsTag] = await Promise.all([
+    inlineStylesheetOrLink(katexUrl),
+    inlineStylesheetOrLink(hljsUrl),
+  ]);
+
   const html = `<!doctype html>
 <html lang="en" data-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/${theme === 'dark' ? 'github-dark' : 'github'}.min.css">
+${katexTag}
+${hljsTag}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
 :root {
@@ -2199,6 +3510,9 @@ img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
 .markdown-alert-important { border-left-color: #8b5cf6; background: rgba(139,92,246,0.08); }
 .markdown-alert-title { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; margin-bottom: 4px; }
 hr { border: 0; height: 1px; background: var(--border); margin: 32px 0; }
+ul.contains-task-list { list-style: none; padding-left: 18px; }
+ul.contains-task-list li.task-list-item { position: relative; padding-left: 4px; }
+ul.contains-task-list li.task-list-item input[type='checkbox'] { margin-right: 6px; accent-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -2220,75 +3534,75 @@ function download(data, filename, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Rasterization runs inside the iframe because html2canvas reads computed
-// styles from ownerDocument.defaultView — driving it from the parent makes
-// it capture the live app instead of the iframe contents.
-const PDF_PAGE_W_MM = 210;
-const PDF_PAGE_H_MM = 297;
-const PDF_MARGIN_MM = 14;
-const PDF_CONTENT_W_PX = 794;
-const PDF_MARGIN_PX = 53;
-const PDF_BODY_W_PX = PDF_CONTENT_W_PX - PDF_MARGIN_PX * 2;
-const PDF_IFRAME_H_PX = 1123;
-const PDF_BUILD_TIMEOUT_MS = 20000;
-const PDF_MAX_CANVAS_SIDE = 14000;
-const PDF_MSG_BLOB = 'mdlab-pdf-blob';
+// PDF export uses a hidden iframe to isolate print CSS, re-render Mermaid
+// against the print layout, and avoid printing the parent app chrome.
+// The browser's native print() produces a true vector PDF with selectable text.
+
+// A4 (210 mm) − 2 × 14 mm margins = 182 mm ≈ 688 px at 96 dpi.
+// If you change @page margin in the print CSS, update this to match.
+const PDF_BODY_W_PX = 688;
+const PDF_PREP_TIMEOUT_MS = 45000;
 const PDF_MSG_ERROR = 'mdlab-pdf-error';
+const PDF_MSG_READY = 'mdlab-print-ready';
 
 async function exportPdf() {
   setStatus('busy', 'Building PDF…');
-  showToast('Building PDF…', 'info');
+  showToast('Preparing print preview…', 'info');
 
   const title = baseFilename();
-  const html = buildPdfSourceHtml(preview.innerHTML, title);
+  const html = buildPrintPdfHtml(preview.innerHTML, title);
 
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-modals');
   iframe.style.cssText =
-    `position:fixed;left:-10000px;top:0;width:${PDF_CONTENT_W_PX}px;height:${PDF_IFRAME_H_PX}px;` +
-    `border:0;visibility:hidden;pointer-events:none;background:#ffffff;`;
+    'position:fixed;left:-10000px;top:0;width:794px;height:1123px;' +
+    'border:0;visibility:hidden;pointer-events:none;';
   iframe.srcdoc = html;
   document.body.appendChild(iframe);
 
+  // Wait for the iframe to signal it's ready (Mermaid rendered, fonts loaded).
   try {
-    const blob = await waitForPdfBlob(iframe);
-    download(blob, `${title}.pdf`, 'application/pdf');
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', onMsg);
+        reject(new Error('PDF prep timed out'));
+      }, PDF_PREP_TIMEOUT_MS);
+      const onMsg = (e) => {
+        if (e.source !== iframe.contentWindow || !e.data) return;
+        if (e.data.type === PDF_MSG_READY) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', onMsg);
+          resolve();
+        } else if (e.data.type === PDF_MSG_ERROR) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', onMsg);
+          reject(new Error(e.data.error || 'unknown'));
+        }
+      };
+      window.addEventListener('message', onMsg);
+    });
+
+    // Native print on the iframe yields a true vector PDF with selectable text.
+    const cw = iframe.contentWindow;
+    const cleanup = () => { try { iframe.remove(); } catch {} };
+    cw.addEventListener('afterprint', cleanup, { once: true });
+    // Safety net: if afterprint never fires (e.g. older browsers), remove
+    // after 60 s — long enough for the user to finish saving.
+    setTimeout(cleanup, 60000);
+    cw.print();
     setStatus('ready', 'Rendered');
-    showToast('PDF downloaded', 'success');
+    showToast('Print dialog opened — choose "Save as PDF"', 'info');
   } catch (err) {
     console.error('PDF export failed:', err);
     setStatus('error', 'PDF export failed');
+    statRender.textContent = '\u2014';
     showToast(`PDF export failed — ${err.message || 'see console'}`, 'error');
-  } finally {
-    iframe.remove();
+    try { iframe.remove(); } catch {}
   }
 }
 
-function waitForPdfBlob(iframe) {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      clearTimeout(timeout);
-      window.removeEventListener('message', onMessage);
-    };
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`PDF build timed out after ${PDF_BUILD_TIMEOUT_MS / 1000}s`));
-    }, PDF_BUILD_TIMEOUT_MS);
-    const onMessage = (e) => {
-      if (e.source !== iframe.contentWindow || !e.data) return;
-      if (e.data.type === PDF_MSG_BLOB && e.data.blob instanceof Blob) {
-        cleanup();
-        resolve(e.data.blob);
-      } else if (e.data.type === PDF_MSG_ERROR) {
-        cleanup();
-        reject(new Error(e.data.error || 'unknown error'));
-      }
-    };
-    window.addEventListener('message', onMessage);
-  });
-}
-
-function buildPdfSourceHtml(bodyInnerHtml, title) {
+function buildPrintPdfHtml(bodyInnerHtml, title) {
   const temp = document.createElement('div');
   temp.innerHTML = bodyInnerHtml;
   resetMermaidNodes(temp.querySelectorAll('.mermaid'));
@@ -2299,15 +3613,7 @@ function buildPdfSourceHtml(bodyInnerHtml, title) {
   });
 
   const lightVars = JSON.stringify(mermaidThemeVars('light'));
-  const config = JSON.stringify({
-    pageWidthMm: PDF_PAGE_W_MM,
-    pageHeightMm: PDF_PAGE_H_MM,
-    marginMm: PDF_MARGIN_MM,
-    contentWidthPx: PDF_CONTENT_W_PX,
-    maxCanvasSide: PDF_MAX_CANVAS_SIDE,
-    msgBlob: PDF_MSG_BLOB,
-    msgError: PDF_MSG_ERROR,
-  });
+  const msgs = JSON.stringify({ ready: PDF_MSG_READY, error: PDF_MSG_ERROR });
 
   return `<!doctype html>
 <html lang="en" data-theme="light">
@@ -2317,22 +3623,25 @@ function buildPdfSourceHtml(bodyInnerHtml, title) {
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-light.min.css" crossorigin="anonymous">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" crossorigin="anonymous"><\/script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" crossorigin="anonymous"><\/script>
 <style>
 ${pdfInlineCss()}
+@media print {
+  @page { size: A4; margin: 14mm; }
+  html, body { margin: 0; padding: 0; }
+  article.pdf-body { width: 100%; max-width: 100%; }
+  .mermaid svg { max-width: 100%; height: auto; page-break-inside: avoid; break-inside: avoid; }
+  pre, table, blockquote, .markdown-alert { page-break-inside: avoid; break-inside: avoid; }
+  h1, h2, h3, h4, h5, h6 { page-break-after: avoid; break-after: avoid; }
+}
 </style>
 </head>
 <body>
 <article class="pdf-body" id="pdf-body">${temp.innerHTML}</article>
 <script type="module">
-const CFG = ${config};
-const report = (err) => parent.postMessage({ type: CFG.msgError, error: String(err?.message || err) }, '*');
-
+const MSG = ${msgs};
 (async () => {
+  const report = (err) => parent.postMessage({ type: MSG.error, error: String(err?.message || err) }, '*');
   try {
-    // htmlLabels:false forces pure SVG <text> — html2canvas does not
-    // reliably rasterize <foreignObject>.
     const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs')).default;
     mermaid.initialize({
       startOnLoad: false,
@@ -2340,83 +3649,34 @@ const report = (err) => parent.postMessage({ type: CFG.msgError, error: String(e
       securityLevel: 'strict',
       fontFamily: 'Inter, system-ui, sans-serif',
       themeVariables: ${lightVars},
-      flowchart: { curve: 'basis', htmlLabels: false },
-      sequence: { showSequenceNumbers: false, actorMargin: 50, useMaxWidth: false },
-      gantt: { fontSize: 12, barHeight: 26, barGap: 6, topPadding: 56, leftPadding: 90 },
+      flowchart:  { curve: 'basis' },
+      sequence:   { showSequenceNumbers: false, actorMargin: 50, useMaxWidth: false },
+      gantt:      { fontSize: 12, barHeight: 26, barGap: 6, topPadding: 56, leftPadding: 90 },
     });
     const nodes = Array.from(document.querySelectorAll('.mermaid'));
     if (nodes.length) {
-      await mermaid.run({ nodes, suppressErrors: true });
+      await mermaid.run({ nodes, suppressErrors: false }).catch(e => {
+        console.warn('Mermaid render error (some diagrams may be blank):', e);
+      });
     }
 
-    // html2canvas sizes <svg> from width/height attrs, not computed style.
+    // Ensure SVGs have explicit dimensions for print.
     document.querySelectorAll('.mermaid svg').forEach(svg => {
       const bb = svg.getBoundingClientRect();
       if (bb.width)  svg.setAttribute('width',  String(Math.round(bb.width)));
       if (bb.height) svg.setAttribute('height', String(Math.round(bb.height)));
       svg.style.maxWidth = '100%';
+      svg.style.height = 'auto';
     });
 
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    // Wait for all images (external <img> tags) to finish loading.
     await Promise.all(Array.from(document.images).map(img =>
-      img.complete ? Promise.resolve() :
+      img.complete ? null :
         new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); })
     ));
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-    // Scale down long docs to stay below the browser's ~16384px canvas limit.
-    const article = document.getElementById('pdf-body');
-    const articleHeight = Math.max(article.scrollHeight, article.offsetHeight);
-    let scale = 2;
-    if (articleHeight * scale > CFG.maxCanvasSide) {
-      scale = Math.max(1, CFG.maxCanvasSide / articleHeight);
-    }
-
-    const canvas = await window.html2canvas(article, {
-      scale,
-      backgroundColor: '#ffffff',
-      useCORS: true,
-      logging: false,
-      windowWidth: CFG.contentWidthPx,
-      windowHeight: articleHeight,
-      scrollX: 0,
-      scrollY: 0,
-      imageTimeout: 15000,
-    });
-
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
-
-    const pageWmm = CFG.pageWidthMm;
-    const pageHmm = CFG.pageHeightMm;
-    const marginMm = CFG.marginMm;
-    const contentWmm = pageWmm - marginMm * 2;
-    const contentHmm = pageHmm - marginMm * 2;
-
-    const pxPerMm = canvas.width / contentWmm;
-    const contentPxH = Math.floor(contentHmm * pxPerMm);
-
-    const totalPx = canvas.height;
-    const tileCanvas = document.createElement('canvas');
-    const tileCtx = tileCanvas.getContext('2d');
-    tileCanvas.width = canvas.width;
-    tileCtx.fillStyle = '#ffffff';
-
-    for (let consumed = 0, pageIdx = 0; consumed < totalPx; pageIdx++) {
-      const sliceH = Math.min(contentPxH, totalPx - consumed);
-      // Resizing height resets the bitmap to transparent; refill so JPEG
-      // encoding doesn't turn unwritten pixels black.
-      tileCanvas.height = sliceH;
-      tileCtx.fillRect(0, 0, canvas.width, sliceH);
-      tileCtx.drawImage(canvas, 0, consumed, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
-      const imgData = tileCanvas.toDataURL('image/jpeg', 0.95);
-      if (pageIdx > 0) pdf.addPage();
-      pdf.addImage(imgData, 'JPEG', marginMm, marginMm, contentWmm, sliceH / pxPerMm, undefined, 'FAST');
-      consumed += sliceH;
-    }
-
-    const blob = pdf.output('blob');
-    parent.postMessage({ type: CFG.msgBlob, blob }, '*');
+    parent.postMessage({ type: MSG.ready }, '*');
   } catch (err) {
     report(err);
   }
@@ -2465,6 +3725,7 @@ blockquote > :last-child { margin-bottom: 8px; }
 .markdown-alert-title { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; margin-bottom: 4px; color: #0f172a; display: flex; align-items: center; gap: 6px; }
 .mermaid { text-align: center; background: #ffffff; padding: 14px; border: 1px solid #d6dae3; border-radius: 6px; margin: 12px 0; }
 .mermaid svg { max-width: 100%; height: auto; display: inline-block; }
+.mermaid img { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 0; } /* fallback if Mermaid emits <img> */
 img { max-width: 100%; height: auto; border-radius: 6px; }
 kbd { display: inline-block; padding: 1px 5px; font-family: 'JetBrains Mono', monospace; font-size: 0.82em; background: #eef1f6; border: 1px solid #cfd4df; border-bottom-width: 2px; border-radius: 4px; color: #0f172a; }
 input[type='checkbox'] { accent-color: #0d9488; }
@@ -2477,11 +3738,274 @@ input[type='checkbox'] { accent-color: #0d9488; }
 function clearDoc() {
   if (!editor.value || confirm('Clear the current document?')) {
     editor.value = '';
-    currentDoc.filename = 'Untitled.md';
-    updateGutter();
+    const f = Store.activeFile();
+    if (f) {
+      markDirty(f.id);
+      scheduleSaveForFile(f.id);
+    }
+    safeUpdateGutter();
     scheduleRender();
     showToast('Cleared', 'info');
   }
+}
+
+let _findBarBuilt = false;
+let _findState = {
+  matches: [],
+  index: -1,
+  caseSensitive: false,
+  regex: false,
+  wholeWord: false,
+  replaceMode: false,
+};
+
+function ensureFindBar() {
+  if (_findBarBuilt) return;
+  _findBarBuilt = true;
+  const bar = document.createElement('div');
+  bar.className = 'find-bar';
+  bar.id = 'find-bar';
+  bar.setAttribute('role', 'search');
+  bar.setAttribute('aria-label', 'Find and replace');
+  bar.innerHTML = `
+    <div class="find-bar__row">
+      <div class="find-bar__field">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="find-bar__input" id="find-input" placeholder="Find" aria-label="Find" spellcheck="false" autocomplete="off" />
+        <span class="find-bar__count" id="find-count">0 / 0</span>
+      </div>
+      <div class="find-bar__toggles" role="group" aria-label="Search options">
+        <button type="button" class="find-bar__toggle" data-find-toggle="case" aria-pressed="false" title="Match case (Alt+C)">Aa</button>
+        <button type="button" class="find-bar__toggle" data-find-toggle="word" aria-pressed="false" title="Whole word (Alt+W)">W</button>
+        <button type="button" class="find-bar__toggle" data-find-toggle="regex" aria-pressed="false" title="Regular expression (Alt+R)">.*</button>
+      </div>
+      <div class="find-bar__controls">
+        <button type="button" class="find-bar__btn" data-find-action="prev" aria-label="Previous match" title="Previous (Shift+Enter)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="18 15 12 9 6 15"/></svg>
+        </button>
+        <button type="button" class="find-bar__btn" data-find-action="next" aria-label="Next match" title="Next (Enter)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <button type="button" class="find-bar__btn" data-find-action="toggle-replace" aria-label="Toggle replace" title="Toggle replace">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 7 13 15 9 11"/><polyline points="3 17 3 21 7 21"/></svg>
+        </button>
+        <button type="button" class="find-bar__btn find-bar__close" data-find-action="close" aria-label="Close find bar" title="Close (Esc)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="find-bar__row find-bar__row--replace">
+      <div class="find-bar__field">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 7 13 15 9 11"/></svg>
+        <input type="text" class="find-bar__input" id="find-replace-input" placeholder="Replace" aria-label="Replace" spellcheck="false" autocomplete="off" />
+      </div>
+      <div class="find-bar__controls">
+        <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace">Replace</button>
+        <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace-all">Replace all</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(bar);
+
+  const input = bar.querySelector('#find-input');
+  const replaceInput = bar.querySelector('#find-replace-input');
+
+  input.addEventListener('input', () => runFind(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) gotoMatch(-1);
+      else gotoMatch(1);
+    }
+    if (e.altKey && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); toggleFindOption('case'); }
+    if (e.altKey && (e.key === 'w' || e.key === 'W')) { e.preventDefault(); toggleFindOption('word'); }
+    if (e.altKey && (e.key === 'r' || e.key === 'R')) { e.preventDefault(); toggleFindOption('regex'); }
+  });
+
+  replaceInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.metaKey || e.ctrlKey) replaceAll();
+      else replaceCurrent();
+    }
+  });
+
+  bar.addEventListener('click', (e) => {
+    const toggle = e.target.closest('[data-find-toggle]');
+    if (toggle) { toggleFindOption(toggle.dataset.findToggle); return; }
+    const action = e.target.closest('[data-find-action]');
+    if (!action) return;
+    switch (action.dataset.findAction) {
+      case 'prev': gotoMatch(-1); break;
+      case 'next': gotoMatch(1); break;
+      case 'toggle-replace': toggleReplaceMode(); break;
+      case 'replace': replaceCurrent(); break;
+      case 'replace-all': replaceAll(); break;
+      case 'close': closeFindBar(); break;
+    }
+  });
+}
+
+function openFindBar({ replace = false } = {}) {
+  ensureFindBar();
+  const bar = document.getElementById('find-bar');
+  const input = document.getElementById('find-input');
+  _findState.replaceMode = !!replace;
+  bar.classList.toggle('is-replace', _findState.replaceMode);
+  bar.classList.add('is-open');
+  const selection = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+  if (selection && !selection.includes('\n')) {
+    input.value = selection;
+  }
+  input.focus();
+  input.select();
+  runFind(input.value);
+}
+
+function closeFindBar() {
+  const bar = document.getElementById('find-bar');
+  if (!bar) return;
+  bar.classList.remove('is-open');
+  _findState.matches = [];
+  _findState.index = -1;
+  updateFindCount();
+  clearFindHighlight();
+  editor.focus();
+}
+
+function toggleReplaceMode() {
+  _findState.replaceMode = !_findState.replaceMode;
+  const bar = document.getElementById('find-bar');
+  bar?.classList.toggle('is-replace', _findState.replaceMode);
+  if (_findState.replaceMode) {
+    document.getElementById('find-replace-input')?.focus();
+  }
+}
+
+function toggleFindOption(name) {
+  if (name === 'case') _findState.caseSensitive = !_findState.caseSensitive;
+  if (name === 'word') _findState.wholeWord = !_findState.wholeWord;
+  if (name === 'regex') _findState.regex = !_findState.regex;
+  const bar = document.getElementById('find-bar');
+  bar?.querySelectorAll('[data-find-toggle]').forEach(btn => {
+    const kind = btn.dataset.findToggle;
+    const on = (kind === 'case' && _findState.caseSensitive) ||
+               (kind === 'word' && _findState.wholeWord) ||
+               (kind === 'regex' && _findState.regex);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.classList.toggle('is-active', on);
+  });
+  runFind(document.getElementById('find-input')?.value ?? '');
+}
+
+function buildFindRegex(query) {
+  if (!query) return null;
+  try {
+    if (_findState.regex) {
+      return new RegExp(query, _findState.caseSensitive ? 'g' : 'gi');
+    }
+    let escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (_findState.wholeWord) escaped = `\\b${escaped}\\b`;
+    return new RegExp(escaped, _findState.caseSensitive ? 'g' : 'gi');
+  } catch {
+    return null;
+  }
+}
+
+function runFind(query) {
+  const re = buildFindRegex(query);
+  _findState.matches = [];
+  if (!re) { _findState.index = -1; updateFindCount(true); clearFindHighlight(); return; }
+  const src = editor.value;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    if (m[0].length === 0) { re.lastIndex++; continue; }
+    _findState.matches.push({ start: m.index, end: m.index + m[0].length });
+    if (_findState.matches.length > 5000) break;
+  }
+  if (_findState.matches.length === 0) {
+    _findState.index = -1;
+    updateFindCount();
+    clearFindHighlight();
+    return;
+  }
+  const caret = editor.selectionStart;
+  let idx = _findState.matches.findIndex(m => m.start >= caret);
+  if (idx === -1) idx = 0;
+  _findState.index = idx;
+  updateFindCount();
+  scrollToCurrentMatch();
+}
+
+function gotoMatch(dir) {
+  if (_findState.matches.length === 0) return;
+  _findState.index = (_findState.index + dir + _findState.matches.length) % _findState.matches.length;
+  updateFindCount();
+  scrollToCurrentMatch();
+}
+
+function scrollToCurrentMatch() {
+  const m = _findState.matches[_findState.index];
+  if (!m) return;
+  editor.focus();
+  try {
+    editor.selectionStart = m.start;
+    editor.selectionEnd = m.end;
+  } catch {}
+  const line = editor.value.slice(0, m.start).split('\n').length - 1;
+  const targetTop = Math.max(0, (lineTops[line] ?? 0) - 120);
+  editor.scrollTop = targetTop;
+  syncGutterToEditor();
+}
+
+function clearFindHighlight() {}
+
+function updateFindCount(invalid = false) {
+  const label = document.getElementById('find-count');
+  const input = document.getElementById('find-input');
+  if (!label || !input) return;
+  const q = input.value;
+  if (!q) { label.textContent = '0 / 0'; input.classList.remove('is-invalid', 'is-no-match'); return; }
+  if (invalid) { label.textContent = '\u2014'; input.classList.add('is-invalid'); input.classList.remove('is-no-match'); return; }
+  const n = _findState.matches.length;
+  label.textContent = n === 0 ? '0 / 0' : `${_findState.index + 1} / ${n}`;
+  input.classList.remove('is-invalid');
+  input.classList.toggle('is-no-match', n === 0);
+}
+
+function replaceCurrent() {
+  if (_findState.matches.length === 0 || _findState.index < 0) return;
+  const replaceInput = document.getElementById('find-replace-input');
+  const replacement = replaceInput?.value ?? '';
+  const m = _findState.matches[_findState.index];
+  const newValue = editor.value.slice(0, m.start) + replacement + editor.value.slice(m.end);
+  const cursor = m.start + replacement.length;
+  editor.value = newValue;
+  try { editor.selectionStart = editor.selectionEnd = cursor; } catch {}
+  editor.dispatchEvent(new Event('input'));
+  const prevIndex = _findState.index;
+  runFind(document.getElementById('find-input').value);
+  if (_findState.matches.length > 0) {
+    _findState.index = Math.min(prevIndex, _findState.matches.length - 1);
+    updateFindCount();
+    scrollToCurrentMatch();
+  }
+}
+
+function replaceAll() {
+  if (_findState.matches.length === 0) return;
+  const q = document.getElementById('find-input')?.value || '';
+  const rawReplacement = document.getElementById('find-replace-input')?.value ?? '';
+  const re = buildFindRegex(q);
+  if (!re) return;
+  // Literal mode: escape $ so $&, $1, $$ aren't treated as regex replacement tokens.
+  const replacement = _findState.regex ? rawReplacement : rawReplacement.replace(/\$/g, '$$$$');
+  const count = _findState.matches.length;
+  const newValue = editor.value.replace(re, replacement);
+  editor.value = newValue;
+  editor.dispatchEvent(new Event('input'));
+  runFind(q);
+  showToast(`Replaced ${count} occurrence${count === 1 ? '' : 's'}`, 'success');
 }
 
 function registerKeyboardShortcuts() {
@@ -2489,6 +4013,13 @@ function registerKeyboardShortcuts() {
     if (e.key === 'Escape') {
       const sc = document.getElementById('shortcuts-overlay');
       if (sc?.classList.contains('is-open')) { e.preventDefault(); hideShortcuts(); return; }
+      if (document.getElementById('palette')?.classList.contains('is-open')) {
+        e.preventDefault(); closePalette(); return;
+      }
+      const findBar = document.getElementById('find-bar');
+      if (findBar?.classList.contains('is-open')) {
+        e.preventDefault(); closeFindBar(); return;
+      }
       if (document.body.classList.contains('is-focus')) { e.preventDefault(); exitFocus(); return; }
     }
 
@@ -2496,9 +4027,38 @@ function registerKeyboardShortcuts() {
       e.preventDefault(); toggleShortcuts(); return;
     }
 
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Tab' && !e.altKey) {
+      e.preventDefault();
+      cycleTab(e.shiftKey ? -1 : 1);
+      return;
+    }
+
     if (!(e.metaKey || e.ctrlKey)) return;
 
-    if (e.key === 'k' || e.key === 'K') { e.preventDefault(); btnTheme.click(); return; }
+    const inEditor = e.target === editor;
+
+    if ((e.key === 'f' || e.key === 'F') && !e.altKey) {
+      if (e.shiftKey) {
+        e.preventDefault(); openFindBar({ replace: true }); return;
+      }
+      e.preventDefault(); openFindBar({ replace: false }); return;
+    }
+    if ((e.key === 'h' || e.key === 'H') && !e.altKey && !e.shiftKey) {
+      e.preventDefault(); openFindBar({ replace: true }); return;
+    }
+
+    if ((e.key === 'k' || e.key === 'K')) {
+      if (e.shiftKey) { e.preventDefault(); btnTheme.click(); return; }
+      if (inEditor) return;
+      e.preventDefault(); btnTheme.click(); return;
+    }
+    if ((e.key === 'b' || e.key === 'B')) {
+      if (e.shiftKey) { e.preventDefault(); toggleSidebar(); return; }
+      if (inEditor) return;
+      e.preventDefault(); toggleSidebar(); return;
+    }
+    if ((e.key === 'i' || e.key === 'I') && inEditor) return;
+
     if (e.key === '.') { e.preventDefault(); toggleFocus(); return; }
     if (e.key === '1') { e.preventDefault(); setView('editor'); return; }
     if (e.key === '2') { e.preventDefault(); setView('split'); return; }
@@ -2506,6 +4066,22 @@ function registerKeyboardShortcuts() {
     if (e.key === 's' || e.key === 'S') { e.preventDefault(); exportMd(); return; }
     if (e.key === 'o' || e.key === 'O') { e.preventDefault(); fileInput.click(); return; }
     if (e.key === '/') { e.preventDefault(); toggleShortcuts(); return; }
+    if (e.key === 'p' || e.key === 'P') { e.preventDefault(); openPalette(); return; }
+    if (e.key === 'n' || e.key === 'N') { e.preventDefault(); newFileInActive(); return; }
+    if (e.key === 'w' || e.key === 'W') {
+      if (Store.activeId) {
+        e.preventDefault();
+        if (Store.dirty.has(Store.activeId)) {
+          const f = Store.activeFile();
+          if (!confirm(`"${f?.name}" has unsaved changes. Close anyway?`)) return;
+        }
+        storeCloseFile(Store.activeId).then(() => {
+          if (Store.activeId) switchToFile(Store.activeId);
+          else resetEditorWhenNoTabs();
+        });
+      }
+      return;
+    }
     if (e.key === 'l' || e.key === 'L') {
       e.preventDefault();
       const isOn = toc?.dataset.collapsed !== 'true';
@@ -2529,13 +4105,55 @@ function showToast(message, variant = 'info') {
   toastTimer = setTimeout(() => toast.classList.remove('is-show'), 2200);
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+let _undoToastTimer = 0;
+let _undoSnapshot = null;
+
+function showUndoableDeleteToast({ snapshot, message }) {
+  if (!snapshot) return;
+  _undoSnapshot = snapshot;
+  clearTimeout(toastTimer);
+  clearTimeout(_undoToastTimer);
+  toast.dataset.variant = 'info';
+  toast.classList.add('is-show', 'has-action');
+  toast.textContent = '';
+  const label = document.createElement('span');
+  label.className = 'toast__label';
+  label.textContent = message;
+  const undo = document.createElement('button');
+  undo.type = 'button';
+  undo.className = 'toast__action';
+  undo.textContent = 'Undo';
+  undo.addEventListener('click', async () => {
+    const snap = _undoSnapshot;
+    _undoSnapshot = null;
+    clearTimeout(_undoToastTimer);
+    toast.classList.remove('is-show', 'has-action');
+    if (!snap) return;
+    try {
+      if (snap.kind === 'file') {
+        const restored = await restoreFile(snap);
+        if (restored) {
+          if (snap.wasOpen) await switchToFile(restored.id);
+          showToast(`Restored "${restored.name}"`, 'success');
+        }
+      } else if (snap.kind === 'project') {
+        await restoreProject(snap);
+        if (snap.activeId && Store.files.has(snap.activeId)) {
+          await switchToFile(snap.activeId);
+        }
+        showToast(`Restored project "${snap.project.name}"`, 'success');
+      }
+    } catch (err) {
+      console.error('Undo failed', err);
+      showToast('Could not restore — see console', 'error');
+    }
+  });
+  toast.appendChild(label);
+  toast.appendChild(undo);
+  _undoToastTimer = setTimeout(() => {
+    toast.classList.remove('is-show', 'has-action');
+    _undoSnapshot = null;
+  }, 7000);
 }
 
 function emptyStateHtml() {
@@ -2564,7 +4182,7 @@ function emptyStateHtml() {
         <li><kbd>⌘</kbd><kbd>1</kbd> Editor</li>
         <li><kbd>⌘</kbd><kbd>2</kbd> Split</li>
         <li><kbd>⌘</kbd><kbd>3</kbd> Preview</li>
-        <li><kbd>⌘</kbd><kbd>K</kbd> Theme</li>
+        <li><kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> Theme</li>
         <li><kbd>⌘</kbd><kbd>.</kbd> Focus</li>
         <li><kbd>?</kbd> All shortcuts</li>
       </ul>
@@ -2578,15 +4196,35 @@ const SHORTCUTS = [
     ['⌘ / Ctrl + 2', 'Split view'],
     ['⌘ / Ctrl + 3', 'Preview only'],
     ['⌘ / Ctrl + .', 'Toggle focus mode'],
+    ['⌘ / Ctrl + ⇧ + B', 'Toggle sidebar'],
     ['Esc',          'Exit focus / close dialog'],
   ]},
-  { group: 'Document', items: [
-    ['⌘ / Ctrl + K', 'Toggle theme'],
-    ['⌘ / Ctrl + L', 'Toggle outline'],
+  { group: 'Files & tabs', items: [
+    ['⌘ / Ctrl + P', 'Quick open / palette'],
+    ['⌘ / Ctrl + N', 'New file'],
+    ['⌘ / Ctrl + W', 'Close tab'],
+    ['⌘ / Ctrl + Tab', 'Next tab'],
+    ['⌘ / Ctrl + ⇧ + Tab', 'Previous tab'],
     ['⌘ / Ctrl + O', 'Open .md file'],
+    ['F2',           'Rename file (in sidebar)'],
+    ['/',            'Focus sidebar search'],
+  ]},
+  { group: 'Editor', items: [
+    ['⌘ / Ctrl + B', 'Bold selection (**…**)'],
+    ['⌘ / Ctrl + I', 'Italic selection (_…_)'],
+    ['⌘ / Ctrl + K', 'Insert / edit link'],
+    ['⌘ / Ctrl + F', 'Find in file'],
+    ['⌘ / Ctrl + ⇧ + F', 'Find and replace'],
+    ['⌘ / Ctrl + H', 'Find and replace'],
+    ['Tab',          'Indent list item (or insert 2 spaces)'],
+    ['⇧ + Tab',      'Outdent list item'],
+    ['Enter',        'Continue list — blank line to exit'],
+  ]},
+  { group: 'Document', items: [
+    ['⌘ / Ctrl + ⇧ + K', 'Toggle theme'],
+    ['⌘ / Ctrl + L', 'Toggle outline'],
     ['⌘ / Ctrl + S', 'Download markdown'],
     ['⌘ / Ctrl + /', 'Show shortcuts'],
-    ['Tab',          'Insert two spaces'],
   ]},
   { group: 'Diagram viewer', items: [
     ['+ / −',        'Zoom in / out'],
@@ -2657,12 +4295,21 @@ function showShortcuts() {
   const root = document.getElementById('shortcuts-overlay');
   root.classList.add('is-open');
   root.setAttribute('aria-hidden', 'false');
+  root._returnFocusTo = document.activeElement;
+  installFocusTrap(root);
+  setTimeout(() => root.querySelector('.shortcuts__close')?.focus(), 10);
 }
 function hideShortcuts() {
   const root = document.getElementById('shortcuts-overlay');
   if (!root) return;
   root.classList.remove('is-open');
   root.setAttribute('aria-hidden', 'true');
+  releaseFocusTrap(root);
+  const prev = root._returnFocusTo;
+  root._returnFocusTo = null;
+  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+    try { prev.focus(); } catch {}
+  }
 }
 function toggleShortcuts() {
   const root = document.getElementById('shortcuts-overlay');

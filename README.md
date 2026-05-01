@@ -77,13 +77,25 @@ The typical options for rendering Markdown are either heavyweight editors (Obsid
 - **LaTeX math** — inline `$x$` and display `$$…$$` via KaTeX, with HTML + MathML output for accessibility
 - **Syntax highlighting** — 190+ languages via highlight.js with auto-detection fallback
 
+### Projects & files
+
+- **Project sidebar** — organize your markdown into projects, each with many files; drag-reorder within or across projects
+- **File tabs** — open multiple files as tabs, drag to reorder, middle-click or <kbd>⌘W</kbd> to close, <kbd>⌘Tab</kbd> to cycle
+- **Per-file autosave** — every file has its own cursor, scroll, and dirty indicator; `●` shows pending writes, clears when saved
+- **IndexedDB storage** — stays 100% client-side but side-steps the 5 MB `localStorage` ceiling; localStorage fallback for private mode
+- **Fuzzy search** — search across every project and file from the sidebar or the command palette
+- **Command palette** — <kbd>⌘P</kbd> opens a unified quick-open and action runner; <kbd>⌘Enter</kbd> creates a new file from the query
+- **Folder import** — bring a directory of `.md` files into a new project, preserving the subfolder name
+- **Undoable delete** — deleting a file or project shows a toast with a 7-second **Undo** action; no accidental permanent loss
+- **Find and replace** — <kbd>⌘F</kbd> / <kbd>⌘H</kbd> opens an inline find bar with case-, word-, and regex-matching
+
 ### Editing experience
 
 - **Live preview** — debounced 120 ms render loop, typical end-to-end latency under 40 ms
 - **Content-aware scroll sync** — editor ↔ preview stay aligned block-by-block, not by ratio; toggle off with one click
 - **Soft-wrapped editor** — long lines wrap visually while the hidden mirror keeps line math correct
-- **Line numbers** — gutter positions track soft-wrapped lines exactly, so numbers never drift from their rows
-- **Autosave** — every keystroke persisted to `localStorage`; scroll position is restored on refresh
+- **Line numbers** — gutter positions track soft-wrapped lines exactly and paint immediately on file upload
+- **Autosave** — every keystroke persisted to IndexedDB, per file; scroll and cursor positions restored per file on refresh
 
 ### Diagrams
 
@@ -91,29 +103,33 @@ The typical options for rendering Markdown are either heavyweight editors (Obsid
 - **Wheel zoom** — calibrated for both mouse wheels and trackpad pinch, with cursor-focal zoom
 - **2× PNG export** — rasterized with inlined computed styles and rebuilt foreignObject labels so colors match on-screen output
 - **Auto theme** — diagrams redraw when you switch light/dark without re-parsing the document
+- **WCAG-audited palette** — every Mermaid text/fill pair meets AA contrast (4.5:1) in both light and dark modes
 
 ### Exports
 
-- Download as self-contained HTML (fonts + theme baked in)
+- Download as self-contained HTML (KaTeX + highlight.js CSS inlined when network is reachable; falls back to CDN `<link>` tags otherwise)
 - Download Markdown source
-- Download as PDF (html2canvas + jsPDF, rendered in a light theme off-screen iframe)
+- Download as PDF (native `window.print()` inside a hidden, light-themed iframe — produces a true vector PDF with selectable text)
 - Copy rendered HTML or raw Markdown
 
 ### UX
 
 - **Three views** — editor-only, split, or preview-only; resizable divider
-- **Focus mode** — hides all chrome; tries real Fullscreen API, falls back to in-page
-- **Dark & light themes** — pixel-identical layouts between modes
+- **Focus mode** — hides all chrome; floating glass dock keeps theme / outline / reading / exit accessible
+- **Dark & light themes** — pixel-identical layouts between modes; theme toggle always one click away
 - **Reading mode** — opt-in serif typography with a narrower column for long-form
-- **Keyboard-first** — shortcuts for every view/theme/action (press `?` for the cheatsheet)
+- **Keyboard-first** — shortcuts for every view/theme/file action (press `?` for the cheatsheet)
+- **Responsive** — sidebar collapses to a drawer on small screens; tabs stay horizontally scrollable
 
 ### Privacy & security
 
 - **100% client-side** — your content never leaves the browser; no analytics or telemetry of any kind
+- **Storage lives on YOUR device** — projects and files are stored in the browser's IndexedDB (origin-isolated, never uploaded). You can inspect or delete the data via DevTools → Application → Storage → IndexedDB → `mdlab`
 - **DOMPurify sanitization** — hostile HTML in untrusted Markdown cannot execute
 - **Strict Mermaid security level** — inline event handlers and external references blocked
 - **No tracking, no cookies, no analytics**
 - **Offline-capable** — once CDN assets are cached, works without a connection
+- **Still a static site** — host on GitHub Pages, Netlify, S3, or serve via `file://`; no backend required
 
 ### Accessibility
 
@@ -128,10 +144,20 @@ The typical options for rendering Markdown are either heavyweight editors (Obsid
 | Shortcut | Action |
 |---|---|
 | <kbd>Ctrl/Cmd</kbd> + <kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd> | Editor / Split / Preview view |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>P</kbd> | Command palette / quick open |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>F</kbd> | Find in file |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>H</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> | Find and replace |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>B</kbd> | Toggle sidebar |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>N</kbd> | New file in active project |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>W</kbd> | Close current tab |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>Tab</kbd> | Next tab (add <kbd>Shift</kbd> for previous) |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>K</kbd> | Toggle theme |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>.</kbd> | Toggle focus mode |
-| <kbd>Ctrl/Cmd</kbd> + <kbd>O</kbd> | Open file |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>L</kbd> | Toggle outline |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>O</kbd> | Open file(s) |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>S</kbd> | Download Markdown |
+| <kbd>F2</kbd> | Rename file (in sidebar) |
+| <kbd>/</kbd> | Focus sidebar search |
 | <kbd>?</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>/</kbd> | Show all shortcuts |
 | <kbd>Esc</kbd> | Exit focus / close dialog |
 | <kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd> | Zoom in / out / fit (diagram viewer) |
@@ -173,8 +199,8 @@ All pinned, all via CDN (jsdelivr). No package manager, no lockfile.
 | [KaTeX](https://katex.org/) | 0.16.11 | Math typesetting |
 | [highlight.js](https://highlightjs.org/) | 11.10.0 | Code highlighting |
 | [DOMPurify](https://github.com/cure53/DOMPurify) | 3.2.7 | HTML sanitization |
-| [html2canvas](https://github.com/niklasvh/html2canvas) | 1.4.1 | PDF export rasterization (loaded on demand) |
-| [jsPDF](https://github.com/parallax/jsPDF) | 2.5.2 | PDF assembly (loaded on demand) |
+
+PDF export uses the browser's native `window.print()` API against a hidden, light-themed iframe — no rasterization library. SVG diagram export is a pure-browser `canvas.toBlob('image/png')` with inlined computed styles. Both are zero-dependency.
 
 ## License
 

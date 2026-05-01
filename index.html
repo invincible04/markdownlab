@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
 
   <!-- App styles -->
-  <link rel="stylesheet" href="css/styles.css?v=2" />
+  <link rel="stylesheet" href="css/styles.css?v=3" />
 
   <!-- Typography: Inter for UI/body, JetBrains Mono for code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -23,15 +23,22 @@
   <!-- highlight.js theme (swapped on theme toggle) -->
   <link rel="stylesheet" id="hljs-theme" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css" />
 
-  <!-- Favicon (inline SVG — MarkdownLab mark) -->
+  <!-- Favicon (inline SVG — MarkdownLab mark). NOTE: '#' must be %23 even
+       inside url(#g) — a literal '#' in a data: URI is parsed as the URL
+       fragment, which truncates the SVG and makes browsers render nothing. -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23059669'/><stop offset='1' stop-color='%230891b2'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z' fill='white'/><path d='M44 28h5v10h4l-6 8-6-8h4V28z' fill='white'/></svg>" />
 </head>
 <body>
   <!-- Top navigation bar -->
   <header class="topbar" role="banner">
     <div class="topbar__brand">
+      <button class="topbar__sidebar-toggle" id="btn-sidebar" aria-label="Toggle sidebar" aria-pressed="true" title="Toggle sidebar (Ctrl/Cmd + B)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <line x1="9" y1="4" x2="9" y2="20"/>
+        </svg>
+      </button>
       <div class="topbar__logo" aria-hidden="true">
-        <!-- MarkdownLab mark: the canonical M↓ glyph in our brand gradient -->
         <svg viewBox="0 0 64 64" width="32" height="32">
           <defs>
             <linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1">
@@ -68,11 +75,29 @@
     </nav>
 
     <div class="topbar__actions">
-      <button class="btn btn--ghost" id="btn-upload" title="Upload .md file">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <span>Upload</span>
+      <button class="btn btn--ghost" id="btn-palette" title="Quick open / command palette (Ctrl/Cmd + P)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span>Quick open</span>
+        <kbd class="btn__kbd" aria-hidden="true">⌘P</kbd>
       </button>
-      <input type="file" id="file-input" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
+
+      <div class="split-btn" data-dropdown="import">
+        <button class="btn btn--ghost split-btn__main" id="btn-upload" title="Upload .md file(s) (Ctrl/Cmd + O)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>Upload</span>
+        </button>
+        <button class="btn btn--ghost split-btn__caret dropdown__trigger" aria-haspopup="true" aria-expanded="false" aria-label="More import options">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="dropdown__menu" role="menu">
+          <button class="dropdown__item" data-action="import-folder" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><polyline points="9 14 12 11 15 14"/></svg>
+            <div><strong>Import folder</strong><small>Import a directory of .md files as a project</small></div>
+          </button>
+        </div>
+      </div>
+      <input type="file" id="file-input" class="sr-file" accept=".md,.markdown,.txt,text/markdown,text/plain" tabindex="-1" aria-hidden="true" multiple />
+      <input type="file" id="folder-input" class="sr-file" tabindex="-1" aria-hidden="true" webkitdirectory directory multiple />
 
       <div class="dropdown" data-dropdown="examples">
         <button class="btn btn--ghost dropdown__trigger" aria-haspopup="true" aria-expanded="false">
@@ -132,121 +157,168 @@
     </div>
   </header>
 
-  <!-- Main workspace -->
-  <main class="workspace" data-view="split">
-    <!-- Editor pane -->
-    <section class="pane pane--editor" aria-label="Markdown editor">
-      <div class="pane__header">
-        <div class="pane__tabs">
-          <span class="pane__tab is-active">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Source
-          </span>
-        </div>
-        <div class="pane__meta" id="editor-meta">
-          <button
-            class="btn btn--ghost btn--mini pane__toggle"
-            id="btn-sync"
-            type="button"
-            aria-pressed="true"
-            title="Scroll sync — editor ↔ preview stay aligned as you scroll"
-          >
-            <svg class="pane__toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="17 1 21 5 17 9"/>
-              <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-              <polyline points="7 23 3 19 7 15"/>
-              <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
-            </svg>
-            <span class="pane__toggle-label">Sync</span>
-          </button>
-          <span title="Paste markdown or drag-and-drop a .md file">Markdown</span>
-        </div>
-      </div>
-      <div class="editor__wrap">
-        <div class="editor__gutter" id="editor-gutter" aria-hidden="true"></div>
-        <div class="editor__surface">
-          <textarea
-            id="editor"
-            class="editor"
-            spellcheck="false"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            wrap="soft"
-            placeholder="# Start typing…&#10;&#10;Paste any markdown here, drag-and-drop a .md file, or load an example from the top bar."
-          ></textarea>
-          <div class="editor__mirror" id="editor-mirror" aria-hidden="true"></div>
-        </div>
-      </div>
-    </section>
+  <!-- Sidebar + workspace wrapper (split into 2 grid columns) -->
+  <div class="shell" id="shell">
 
-    <!-- Resize handle -->
-    <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize panes"></div>
+    <!-- Projects sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Projects and files">
+      <div class="sidebar__search">
+        <svg class="sidebar__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="sidebar-search" class="sidebar__search-input" placeholder="Search files…" autocomplete="off" spellcheck="false" aria-label="Search files" />
+        <kbd class="sidebar__search-kbd" aria-hidden="true">⌘P</kbd>
+      </div>
 
-    <!-- Preview pane -->
-    <section class="pane pane--preview" aria-label="Rendered preview">
-      <div class="pane__header">
-        <div class="pane__tabs">
-          <span class="pane__tab is-active">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            Preview
-          </span>
-        </div>
-        <div class="pane__meta">
-          <button
-            class="btn btn--ghost btn--mini pane__toggle"
-            id="btn-toc"
-            type="button"
-            aria-pressed="true"
-            aria-controls="toc"
-            title="Outline — table of contents (Ctrl/Cmd + L)"
-          >
-            <svg class="pane__toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="8" y1="6" x2="21" y2="6"/>
-              <line x1="8" y1="12" x2="21" y2="12"/>
-              <line x1="8" y1="18" x2="21" y2="18"/>
-              <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
-              <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
-              <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
-            </svg>
-            <span class="pane__toggle-label">Outline</span>
+      <div class="sidebar__header">
+        <h2 class="sidebar__title">Projects</h2>
+        <div class="sidebar__header-actions">
+          <button class="sidebar__icon-btn" id="btn-new-file" aria-label="New file in active project" title="New file (Ctrl/Cmd + N)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
           </button>
-          <label class="switch" title="Reading-focused typography">
-            <input type="checkbox" id="toggle-prose" />
-            <span class="switch__track"><span class="switch__thumb"></span></span>
-            <span class="switch__label">Reading mode</span>
-          </label>
+          <button class="sidebar__icon-btn" id="btn-new-project" aria-label="New project" title="New project">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+          </button>
         </div>
       </div>
-      <div class="preview__layout">
-        <div class="preview__wrap" id="preview-wrap">
-          <article class="preview markdown-body" id="preview" aria-live="polite"></article>
-        </div>
-        <aside class="toc" id="toc" aria-label="Table of contents" data-empty="true">
-          <div class="toc__header">
-            <span class="toc__title">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <line x1="8" y1="6" x2="21" y2="6"/>
-                <line x1="8" y1="12" x2="21" y2="12"/>
-                <line x1="8" y1="18" x2="21" y2="18"/>
-                <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
-                <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
-                <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
-              </svg>
-              On this page
-            </span>
-            <button class="toc__close" id="btn-toc-close" type="button" aria-label="Hide outline" title="Hide outline">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
+
+      <div class="sidebar__tree" id="sidebar-tree" role="tree" aria-label="Projects"></div>
+
+      <div class="sidebar__footer">
+        <span class="sidebar__storage" id="sidebar-storage">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>
+          <span id="sidebar-storage-label">Local</span>
+        </span>
+      </div>
+
+      <div class="sidebar__resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize sidebar"></div>
+    </aside>
+
+    <!-- Main workspace (tabs + panes) -->
+    <main class="workspace">
+      <!-- File tab strip -->
+      <div class="tabs" id="tabs" role="tablist" aria-label="Open files">
+        <div class="tabs__scroll" id="tabs-scroll"></div>
+        <button class="tabs__add" id="btn-tabs-add" aria-label="New file" title="New file (Ctrl/Cmd + N)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </div>
+
+      <!-- Editor + preview panes -->
+      <div class="panes" id="panes" data-view="split">
+        <!-- Editor pane -->
+        <section class="pane pane--editor" aria-label="Markdown editor">
+          <div class="pane__header">
+            <div class="pane__tabs">
+              <span class="pane__tab is-active">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                Source
+              </span>
+            </div>
+            <div class="pane__meta" id="editor-meta">
+              <button
+                class="btn btn--ghost btn--mini pane__toggle"
+                id="btn-sync"
+                type="button"
+                aria-pressed="true"
+                title="Scroll sync — editor ↔ preview stay aligned as you scroll"
+              >
+                <svg class="pane__toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="17 1 21 5 17 9"/>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                  <polyline points="7 23 3 19 7 15"/>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg>
+                <span class="pane__toggle-label">Sync</span>
+              </button>
+              <span title="Paste markdown or drag-and-drop a .md file">Markdown</span>
+            </div>
           </div>
-          <nav class="toc__nav" id="toc-nav" aria-label="Document outline"></nav>
-        </aside>
+          <div class="editor__wrap">
+            <div class="editor__gutter" id="editor-gutter" aria-hidden="true"></div>
+            <div class="editor__surface">
+              <textarea
+                id="editor"
+                class="editor"
+                spellcheck="false"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                wrap="soft"
+                placeholder="# Start typing…&#10;&#10;Paste any markdown here, drag-and-drop a .md file, or load an example from the top bar."
+              ></textarea>
+              <div class="editor__mirror" id="editor-mirror" aria-hidden="true"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Resize handle -->
+        <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize panes"></div>
+
+        <!-- Preview pane -->
+        <section class="pane pane--preview" aria-label="Rendered preview">
+          <div class="pane__header">
+            <div class="pane__tabs">
+              <span class="pane__tab is-active">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                Preview
+              </span>
+            </div>
+            <div class="pane__meta">
+              <button
+                class="btn btn--ghost btn--mini pane__toggle"
+                id="btn-toc"
+                type="button"
+                aria-pressed="true"
+                aria-controls="toc"
+                title="Outline — table of contents (Ctrl/Cmd + L)"
+              >
+                <svg class="pane__toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="8" y1="6" x2="21" y2="6"/>
+                  <line x1="8" y1="12" x2="21" y2="12"/>
+                  <line x1="8" y1="18" x2="21" y2="18"/>
+                  <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
+                  <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+                  <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
+                </svg>
+                <span class="pane__toggle-label">Outline</span>
+              </button>
+              <label class="switch" title="Reading-focused typography">
+                <input type="checkbox" id="toggle-prose" />
+                <span class="switch__track"><span class="switch__thumb"></span></span>
+                <span class="switch__label">Reading mode</span>
+              </label>
+            </div>
+          </div>
+          <div class="preview__layout">
+            <div class="preview__wrap" id="preview-wrap">
+              <article class="preview markdown-body" id="preview" aria-live="polite"></article>
+            </div>
+            <aside class="toc" id="toc" aria-label="Table of contents" data-empty="true">
+              <div class="toc__header">
+                <span class="toc__title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="8" y1="6" x2="21" y2="6"/>
+                    <line x1="8" y1="12" x2="21" y2="12"/>
+                    <line x1="8" y1="18" x2="21" y2="18"/>
+                    <circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/>
+                    <circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+                    <circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/>
+                  </svg>
+                  On this page
+                </span>
+                <button class="toc__close" id="btn-toc-close" type="button" aria-label="Hide outline" title="Hide outline">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+              <nav class="toc__nav" id="toc-nav" aria-label="Document outline"></nav>
+            </aside>
+          </div>
+        </section>
       </div>
-    </section>
-  </main>
+    </main>
+  </div>
 
   <!-- Status bar -->
   <footer class="statusbar" role="contentinfo">
@@ -266,7 +338,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M7 10h0M11 10h0M15 10h0M7 14h10"/></svg>
         Shortcuts
       </button>
-      <a class="stat stat--link" href="https://github.com/invincible04/MarkdownLab" target="_blank" rel="noopener" id="repo-link" title="View source on GitHub">
+      <a class="stat stat--link" href="https://github.com/invincible04/markdownlab" target="_blank" rel="noopener" id="repo-link" title="View source on GitHub">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.17c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58C20.57 21.79 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
         Source
       </a>
@@ -277,19 +349,49 @@
   <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
     <div class="drop-overlay__card">
       <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      <h2>Drop your markdown file</h2>
-      <p>.md, .markdown, or .txt — rendered instantly</p>
+      <h2>Drop your markdown file(s)</h2>
+      <p>.md, .markdown, or .txt — imported into the active project</p>
     </div>
   </div>
 
-  <!-- Floating exit-focus control (only visible in focus mode) -->
-  <button class="focus-exit" id="btn-focus-exit" aria-label="Exit focus mode" title="Exit focus mode (Esc)">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
-    <span>Exit focus</span>
-  </button>
+  <!-- Focus-mode floating glass dock (theme / reading / outline / exit) -->
+  <div class="focus-dock" id="focus-dock" role="toolbar" aria-label="Focus mode controls">
+    <button class="focus-dock__btn" id="dock-theme" aria-label="Toggle theme" title="Toggle theme (Ctrl/Cmd + K)">
+      <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+    <button class="focus-dock__btn" id="dock-reading" aria-label="Toggle reading mode" aria-pressed="false" title="Reading mode">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+    </button>
+    <button class="focus-dock__btn" id="dock-outline" aria-label="Toggle outline" aria-pressed="true" title="Outline (Ctrl/Cmd + L)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/></svg>
+    </button>
+    <span class="focus-dock__divider" aria-hidden="true"></span>
+    <button class="focus-dock__btn focus-dock__btn--exit" id="dock-exit" aria-label="Exit focus mode" title="Exit focus (Esc)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+      <span class="focus-dock__label">Exit</span>
+    </button>
+  </div>
+
+  <!-- Command palette / quick open -->
+  <div class="palette" id="palette" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Quick open / command palette">
+    <div class="palette__card" role="document">
+      <div class="palette__input-wrap">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="palette__input-icon" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="palette-input" class="palette__input" placeholder="Search files or run a command…" autocomplete="off" spellcheck="false" aria-label="Quick open" role="combobox" aria-autocomplete="list" aria-controls="palette-list" aria-expanded="true" />
+        <kbd class="palette__hint">Esc</kbd>
+      </div>
+      <ul class="palette__list" id="palette-list" role="listbox" aria-label="Search results"></ul>
+      <div class="palette__footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span><kbd>↵</kbd> open</span>
+        <span><kbd>⌘</kbd><kbd>Enter</kbd> new file</span>
+      </div>
+    </div>
+  </div>
 
   <!-- Diagram lightbox / zoom viewer -->
-  <div class="lightbox" id="lightbox" aria-hidden="true" role="dialog" aria-label="Diagram viewer">
+  <div class="lightbox" id="lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Diagram viewer">
     <div class="lightbox__toolbar" role="toolbar" aria-label="Diagram controls">
       <button class="lightbox__btn" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>

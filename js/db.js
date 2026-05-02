@@ -290,7 +290,14 @@ function isIdbRuntimeFailure(err) {
       || /DB_UNAVAILABLE/.test(err?.message || '');
 }
 
+// Collision-resistant ID generator. Prefers crypto.randomUUID() where
+// available (secure contexts on all supported browsers); falls back to
+// a timestamp + 48-bit random combo for file:// previews and similar
+// non-secure contexts.
 export function newId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
   return (
     Date.now().toString(36) +
     Math.random().toString(36).slice(2, 8)

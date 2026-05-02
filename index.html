@@ -2,47 +2,210 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <!-- viewport-fit=cover => lets us paint behind the iOS notch/Dynamic Island
-       and use env(safe-area-inset-*) for padding. -->
+  <!-- viewport-fit=cover paints behind the iOS notch; safe-area-inset-* handles padding. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
-  <!-- Mobile browser chrome matches app surface (iOS Safari / Chrome address bar). -->
   <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)" />
-  <!-- Standalone PWA / Add to Home Screen niceties -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="format-detection" content="telephone=no" />
-  <title>MarkdownLab — Live Markdown, Mermaid & LaTeX Renderer</title>
-  <meta name="description" content="MarkdownLab — a beautiful static markdown playground. Paste or drop a .md file and get instant rendering for GFM, syntax-highlighted code, Mermaid diagrams, and KaTeX math." />
+  <meta name="application-name" content="MarkdownLab" />
+  <meta name="apple-mobile-web-app-title" content="MarkdownLab" />
 
+  <!-- title ≤ 60 chars, description ≤ 155 chars — avoid SERP truncation. -->
+  <title>MarkdownLab — Free Online Markdown Editor with Mermaid & LaTeX</title>
+  <meta name="description" content="Free online markdown editor with live preview, Mermaid diagrams, KaTeX math, syntax highlighting, and PDF/HTML export. Works offline, no sign-up, no tracking." />
+  <meta name="keywords" content="markdown editor, mermaid editor, katex editor, markdown to pdf, gfm editor" />
+  <meta name="author" content="MarkdownLab" />
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+  <meta name="googlebot" content="index, follow" />
+  <meta name="rating" content="general" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <link rel="canonical" href="https://markdownlab.vercel.app/" />
+
+  <!-- og:image must be a raster (PNG). Every major social platform rejects SVG. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="MarkdownLab" />
+  <meta property="og:title" content="MarkdownLab — Free Online Markdown Editor with Mermaid & LaTeX" />
+  <meta property="og:description" content="Live-preview markdown editor with Mermaid diagrams, KaTeX math, syntax highlighting, and PDF/HTML export. Works offline, no sign-up, no tracking." />
+  <meta property="og:url" content="https://markdownlab.vercel.app/" />
+  <meta property="og:image" content="https://markdownlab.vercel.app/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="MarkdownLab — a browser-based markdown editor with live preview, Mermaid diagrams, and LaTeX math" />
+  <meta property="og:locale" content="en_US" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MarkdownLab — Free Online Markdown Editor" />
+  <meta name="twitter:description" content="Live-preview markdown editor with Mermaid, KaTeX, syntax highlighting, and PDF/HTML export. Works offline, no sign-up." />
+  <meta name="twitter:image" content="https://markdownlab.vercel.app/og-image.png" />
+  <meta name="twitter:image:alt" content="MarkdownLab editor interface with live markdown preview" />
+
+  <!-- preconnect warms TCP+TLS; modulepreload kicks off app.js before HTML parse ends. -->
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-
-  <!-- App styles -->
-  <link rel="stylesheet" href="css/styles.css?v=3" />
-  <!-- Mobile-specific overrides (loaded last so it wins the cascade on small screens).
-       Desktop rules in styles.css are untouched; this file only defines @media blocks. -->
-  <link rel="stylesheet" href="css/mobile.css?v=4" />
-
-  <!-- Typography: Inter for UI/body, JetBrains Mono for code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="modulepreload" href="js/app.js" />
+
+  <link rel="stylesheet" href="css/styles.css?v=3" />
+  <!-- mobile.css last so @media rules win the cascade. -->
+  <link rel="stylesheet" href="css/mobile.css?v=4" />
+
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Lora:ital,wght@0,400..700;1,400..700&display=swap" />
 
-  <!-- KaTeX CSS (required for rendered math) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" />
+  <!-- Async CSS: media="print" defers fetch priority; the CSP-hashed script
+       below flips to media="all" once loaded. Avoids inline onload= (would
+       require 'unsafe-inline' in CSP). -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" media="print" data-async-css />
+  <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" /></noscript>
 
-  <!-- highlight.js theme (swapped on theme toggle) -->
-  <link rel="stylesheet" id="hljs-theme" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css" />
+  <!-- Swapped at runtime on theme toggle. -->
+  <link rel="stylesheet" id="hljs-theme" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css" media="print" data-async-css />
+  <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css" /></noscript>
 
-  <!-- Favicon (inline SVG — MarkdownLab mark). NOTE: '#' must be %23 even
-       inside url(#g) — a literal '#' in a data: URI is parsed as the URL
-       fragment, which truncates the SVG and makes browsers render nothing. -->
+  <!-- CSP-hashed: any edit here requires recomputing SHA-256 in vercel.json.
+       The `l.sheet` probe handles the cache race where `load` fires before
+       the listener is attached. -->
+  <script>document.querySelectorAll('link[data-async-css]').forEach(function(l){if(l.sheet){l.media='all';return;}l.addEventListener('load',function(){l.media='all';},{once:true});});</script>
+
+  <link rel="manifest" href="manifest.webmanifest" />
+
+  <!-- Inline SVG for modern browsers; PNGs for iOS (no SVG there).
+       '#' must be %23-encoded — literal '#' would truncate the data URI. -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23059669'/><stop offset='1' stop-color='%230891b2'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z' fill='white'/><path d='M44 28h5v10h4l-6 8-6-8h4V28z' fill='white'/></svg>" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
+
+  <!-- @id wiring stitches all four nodes into one entity graph for Google.
+       FAQPage is kept for AI crawlers — Google restricted FAQ rich results in 2023. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://markdownlab.vercel.app/#website",
+        "url": "https://markdownlab.vercel.app/",
+        "name": "MarkdownLab",
+        "description": "Free online markdown editor with live preview, Mermaid diagrams, KaTeX math, and PDF/HTML export.",
+        "inLanguage": "en-US",
+        "publisher": { "@id": "https://markdownlab.vercel.app/#organization" }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://markdownlab.vercel.app/#organization",
+        "name": "MarkdownLab",
+        "url": "https://markdownlab.vercel.app/",
+        "logo": "https://markdownlab.vercel.app/og-image.png",
+        "sameAs": ["https://github.com/invincible04/markdownlab"]
+      },
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://markdownlab.vercel.app/#software",
+        "name": "MarkdownLab",
+        "url": "https://markdownlab.vercel.app/",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Text Editor",
+        "operatingSystem": "Web Browser (Chrome, Firefox, Safari, Edge)",
+        "browserRequirements": "Requires JavaScript and a modern browser with ES Modules support.",
+        "description": "Browser-based markdown editor with live preview. Supports GitHub Flavored Markdown, Mermaid diagrams, KaTeX math, syntax highlighting, multi-file projects, and PDF/HTML export. Runs entirely client-side — your documents never leave your device.",
+        "softwareVersion": "1.0",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Live markdown preview with split view",
+          "GitHub Flavored Markdown (GFM) support",
+          "Mermaid diagram rendering (flowcharts, sequence, gantt, ER)",
+          "KaTeX / LaTeX math equations",
+          "Syntax-highlighted code blocks (highlight.js)",
+          "Multi-file projects with tabs and command palette",
+          "Export to HTML, PDF, and Markdown",
+          "Dark and light themes",
+          "Offline-first — no server, works without internet after first load",
+          "Keyboard shortcuts and focus mode",
+          "Drag-and-drop .md file import",
+          "Table of contents with scroll sync",
+          "Find and replace with regex",
+          "Reading mode with prose typography"
+        ],
+        "author": { "@id": "https://markdownlab.vercel.app/#organization" }
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://markdownlab.vercel.app/#faq",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is MarkdownLab free to use?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. MarkdownLab is 100% free, open-source, and requires no account. Every feature — Mermaid diagrams, KaTeX math, PDF export, multi-file projects — is available without payment or sign-up."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does MarkdownLab work offline?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. After the first load, MarkdownLab runs entirely in your browser. Your documents are saved locally via IndexedDB and never leave your device. No server, no telemetry, no tracking."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What markdown flavors does MarkdownLab support?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "MarkdownLab supports GitHub Flavored Markdown (GFM), including tables, task lists, strikethrough, autolinks, footnotes, heading anchors, and fenced code blocks with language-aware syntax highlighting."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I render Mermaid diagrams in MarkdownLab?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Fence any block with ```mermaid and MarkdownLab renders flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, and more. Diagrams open in a zoomable lightbox and export as high-resolution PNG."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does MarkdownLab support LaTeX math?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Inline math uses $...$ and block math uses $$...$$. MarkdownLab renders equations with KaTeX, which is faster and more accurate than MathJax for most use cases."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I export markdown to PDF?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Click Export → Download PDF. MarkdownLab uses your browser's native print engine, so output is crisp vector text (not a rasterized screenshot) with proper pagination, footnotes, and working hyperlinks."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is my data private?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. MarkdownLab is a static site — there is no backend, no analytics, no tracking pixels, and no cookies. All documents are stored in IndexedDB on your device. You can inspect the source on GitHub."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
-  <!-- Top navigation bar -->
+  <!-- WCAG 2.4.1 Bypass Blocks — hidden until focused. -->
+  <a class="skip-link" href="#editor">Skip to editor</a>
+
   <header class="topbar" role="banner">
     <div class="topbar__brand">
       <button class="topbar__sidebar-toggle" id="btn-sidebar" aria-label="Toggle sidebar" aria-pressed="true" title="Toggle sidebar (Ctrl/Cmd + B)">
@@ -65,7 +228,11 @@
         </svg>
       </div>
       <div class="topbar__title">
-        <h1>MarkdownLab</h1>
+        <!-- Visually-hidden <h1>: real DOM node indexed by crawlers and
+             announced once by screen readers. The visible brand span
+             keeps the top bar compact. -->
+        <h1 class="visually-hidden">MarkdownLab — Free online markdown editor with Mermaid diagrams and LaTeX math, offline-capable and open source</h1>
+        <span class="topbar__title-brand" aria-hidden="true">MarkdownLab</span>
         <p class="topbar__subtitle" id="file-indicator">Untitled.md · autosaved</p>
       </div>
     </div>
@@ -118,9 +285,7 @@
           <span>Examples</span>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="dropdown__caret"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
-        <div class="dropdown__menu" id="examples-menu" role="menu">
-          <!-- Populated by app.js -->
-        </div>
+        <div class="dropdown__menu" id="examples-menu" role="menu"></div>
       </div>
 
       <button class="btn btn--ghost btn--icon" id="btn-focus" aria-label="Toggle focus mode" title="Focus mode (Ctrl/Cmd + .)">
@@ -170,10 +335,8 @@
     </div>
   </header>
 
-  <!-- Sidebar + workspace wrapper (split into 2 grid columns) -->
   <div class="shell" id="shell">
 
-    <!-- Projects sidebar -->
     <aside class="sidebar" id="sidebar" aria-label="Projects and files">
       <div class="sidebar__search">
         <svg class="sidebar__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -205,9 +368,7 @@
       <div class="sidebar__resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize sidebar"></div>
     </aside>
 
-    <!-- Main workspace (tabs + panes) -->
     <main class="workspace">
-      <!-- File tab strip -->
       <div class="tabs" id="tabs" role="tablist" aria-label="Open files">
         <div class="tabs__scroll" id="tabs-scroll"></div>
         <button class="tabs__add" id="btn-tabs-add" aria-label="New file" title="New file (Ctrl/Cmd + N)">
@@ -215,9 +376,7 @@
         </button>
       </div>
 
-      <!-- Editor + preview panes -->
       <div class="panes" id="panes" data-view="split">
-        <!-- Editor pane -->
         <section class="pane pane--editor" aria-label="Markdown editor">
           <div class="pane__header">
             <div class="pane__tabs">
@@ -256,6 +415,7 @@
                 autocapitalize="off"
                 autocorrect="off"
                 wrap="soft"
+                aria-label="Markdown source editor"
                 placeholder="# Start typing…&#10;&#10;Paste any markdown here, drag-and-drop a .md file, or load an example from the top bar."
               ></textarea>
               <div class="editor__mirror" id="editor-mirror" aria-hidden="true"></div>
@@ -263,10 +423,8 @@
           </div>
         </section>
 
-        <!-- Resize handle -->
         <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize panes"></div>
 
-        <!-- Preview pane -->
         <section class="pane pane--preview" aria-label="Rendered preview">
           <div class="pane__header">
             <div class="pane__tabs">
@@ -303,7 +461,10 @@
           </div>
           <div class="preview__layout">
             <div class="preview__wrap" id="preview-wrap">
-              <article class="preview markdown-body" id="preview" aria-live="polite"></article>
+              <!-- Not a live region — preview re-renders every keystroke, which
+                   would cause SR to announce the full document repeatedly.
+                   role="article" gives SR users a landmark instead. -->
+              <article class="preview markdown-body" id="preview" role="article" aria-label="Rendered preview"></article>
             </div>
             <aside class="toc" id="toc" aria-label="Table of contents" data-empty="true">
               <div class="toc__header">
@@ -333,7 +494,6 @@
     </main>
   </div>
 
-  <!-- Status bar -->
   <footer class="statusbar" role="contentinfo">
     <div class="statusbar__group">
       <span class="status-dot" id="status-dot" data-status="ready" aria-hidden="true"></span>
@@ -351,6 +511,10 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M7 10h0M11 10h0M15 10h0M7 14h10"/></svg>
         Shortcuts
       </button>
+      <button class="stat stat--btn" id="btn-about" type="button" title="About MarkdownLab" aria-label="About MarkdownLab" aria-haspopup="dialog">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        About
+      </button>
       <a class="stat stat--link" href="https://github.com/invincible04/markdownlab" target="_blank" rel="noopener" id="repo-link" title="View source on GitHub">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.17c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58C20.57 21.79 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
         Source
@@ -358,7 +522,6 @@
     </div>
   </footer>
 
-  <!-- Drag-and-drop overlay -->
   <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
     <div class="drop-overlay__card">
       <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -367,7 +530,7 @@
     </div>
   </div>
 
-  <!-- Focus-mode floating glass dock (theme / reading / outline / exit) -->
+  <!-- Focus-mode glass dock: theme / reading / outline / exit -->
   <div class="focus-dock" id="focus-dock" role="toolbar" aria-label="Focus mode controls">
     <button class="focus-dock__btn" id="dock-theme" aria-label="Toggle theme" title="Toggle theme (Ctrl/Cmd + K)">
       <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -386,8 +549,7 @@
     </button>
   </div>
 
-  <!-- Command palette / quick open -->
-  <div class="palette" id="palette" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Quick open / command palette">
+  <div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Quick open / command palette">
     <div class="palette__card" role="document">
       <div class="palette__input-wrap">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="palette__input-icon" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -403,8 +565,7 @@
     </div>
   </div>
 
-  <!-- Diagram lightbox / zoom viewer -->
-  <div class="lightbox" id="lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Diagram viewer">
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Diagram viewer">
     <div class="lightbox__toolbar" role="toolbar" aria-label="Diagram controls">
       <button class="lightbox__btn" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -430,19 +591,196 @@
     <div class="lightbox__hint">Drag to pan · scroll to zoom · double-click to reset</div>
   </div>
 
-  <!-- Toast -->
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <!-- Libraries (CDN-pinned, SRI-less because some mirrors vary; jsdelivr is stable) -->
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@3.1.3/lib/index.umd.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked-footnote@1.2.4/dist/index.umd.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.7/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <!-- Static HTML (not built by JS) so crawlers — including AI bots —
+       read the full copy and FAQ. `hidden` keeps it out of both layout
+       and the a11y tree until opened. -->
+  <div class="about-modal" id="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
+    <div class="about-modal__card" role="document">
+      <header class="about-modal__header">
+        <div class="about-modal__brand">
+          <svg class="about-modal__mark" viewBox="0 0 64 64" width="40" height="40" aria-hidden="true">
+            <defs>
+              <linearGradient id="about-mark-g" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="var(--accent-a)"/>
+                <stop offset="1" stop-color="var(--accent-b)"/>
+              </linearGradient>
+            </defs>
+            <rect width="64" height="64" rx="14" fill="url(#about-mark-g)"/>
+            <path d="M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z" fill="white"/>
+            <path d="M44 28h5v10h4l-6 8-6-8h4V28z" fill="white"/>
+          </svg>
+          <div class="about-modal__brand-text">
+            <h2 id="about-title">MarkdownLab</h2>
+            <p class="about-modal__tagline">Free · open source · runs in your browser</p>
+          </div>
+        </div>
+        <button class="about-modal__close" id="btn-about-close" type="button" aria-label="Close" title="Close (Esc)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </header>
 
-  <!-- App (module, imports Mermaid ESM) -->
+      <div class="about-modal__body">
+        <p class="about-modal__lede">
+          A browser-based markdown editor with live preview. Supports
+          <strong>GitHub Flavored Markdown</strong>, <strong>Mermaid diagrams</strong>,
+          <strong>KaTeX / LaTeX math</strong>, and syntax-highlighted code —
+          rendered entirely in your browser. No server, no account, no tracking.
+        </p>
+
+        <h3 class="about-modal__section-title">What it does</h3>
+        <ul class="about-modal__features">
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <div>
+              <strong>Live split preview</strong>
+              <span>Edit on the left, rendered HTML on the right, with optional scroll sync.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+            <div>
+              <strong>Mermaid diagrams</strong>
+              <span>Flowcharts, sequence, class, ER, Gantt, pie. Click to zoom, export as PNG.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3L2 12h3v7h6v-5h2v5h6v-7h3z"/></svg>
+            <div>
+              <strong>KaTeX math</strong>
+              <span>Inline <code>$…$</code> and block <code>$$…$$</code>. Full LaTeX math-mode.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            <div>
+              <strong>Syntax highlighting</strong>
+              <span>190+ languages via highlight.js, themed for both dark and light modes.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <div>
+              <strong>Multi-file projects</strong>
+              <span>Sidebar tree, draggable tabs, command palette — a real workspace.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <div>
+              <strong>Export anywhere</strong>
+              <span>HTML (self-contained), PDF (vector via native print), or Markdown.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L2 7v6c0 5.5 4 10 10 11 6-1 10-5.5 10-11V7z"/></svg>
+            <div>
+              <strong>Offline &amp; private</strong>
+              <span>No backend. Documents stay in IndexedDB on your device.</span>
+            </div>
+          </li>
+          <li>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div>
+              <strong>Find &amp; replace</strong>
+              <span>Regex, case-sensitive, and whole-word — all built in.</span>
+            </div>
+          </li>
+        </ul>
+
+        <h3 class="about-modal__section-title">Frequently asked</h3>
+        <!-- All three tabpanels exist on every load so crawlers index every
+             Q&A; JS only flips aria-selected / hidden. Follows WAI-ARIA APG
+             tablist/tab/tabpanel pattern. -->
+        <div class="about-modal__faq-tabs" role="tablist" aria-label="FAQ categories">
+          <button class="about-modal__faq-tab is-active" role="tab" id="faq-tab-general"
+                  aria-selected="true" aria-controls="faq-panel-general" tabindex="0" type="button">
+            General
+            <span class="about-modal__faq-tab-count">3</span>
+          </button>
+          <button class="about-modal__faq-tab" role="tab" id="faq-tab-features"
+                  aria-selected="false" aria-controls="faq-panel-features" tabindex="-1" type="button">
+            Features
+            <span class="about-modal__faq-tab-count">3</span>
+          </button>
+          <button class="about-modal__faq-tab" role="tab" id="faq-tab-technical"
+                  aria-selected="false" aria-controls="faq-panel-technical" tabindex="-1" type="button">
+            Technical
+            <span class="about-modal__faq-tab-count">2</span>
+          </button>
+        </div>
+
+        <!-- First question open so users see an answer without clicking. -->
+        <div class="about-modal__faq" role="tabpanel" id="faq-panel-general"
+             aria-labelledby="faq-tab-general">
+          <details open>
+            <summary>Is MarkdownLab really free?</summary>
+            <p>Yes — free and open source under the MIT license. Every feature is available without payment, sign-up, or email capture.</p>
+          </details>
+          <details>
+            <summary>Does it work offline?</summary>
+            <p>Yes. After the first page load, MarkdownLab runs entirely in your browser. Documents persist in IndexedDB and survive reloads and browser restarts.</p>
+          </details>
+          <details>
+            <summary>Is my markdown private?</summary>
+            <p>Completely. No backend, no analytics, no cookies. Documents never leave your device. You can verify the source on <a href="https://github.com/invincible04/markdownlab" target="_blank" rel="noopener">GitHub</a>.</p>
+          </details>
+        </div>
+
+        <div class="about-modal__faq" role="tabpanel" id="faq-panel-features"
+             aria-labelledby="faq-tab-features" hidden>
+          <details>
+            <summary>Which markdown flavor is supported?</summary>
+            <p>GitHub Flavored Markdown (GFM) via the <code>marked</code> parser, plus heading-ID and footnote extensions.</p>
+          </details>
+          <details>
+            <summary>Can I render Mermaid diagrams?</summary>
+            <p>Yes — any fenced block tagged <code>mermaid</code> renders as an interactive diagram with click-to-zoom and PNG export.</p>
+          </details>
+          <details>
+            <summary>Does it support LaTeX math?</summary>
+            <p>Yes, via KaTeX. Use <code>$…$</code> for inline math and <code>$$…$$</code> for block math.</p>
+          </details>
+        </div>
+
+        <div class="about-modal__faq" role="tabpanel" id="faq-panel-technical"
+             aria-labelledby="faq-tab-technical" hidden>
+          <details>
+            <summary>How do I export to PDF?</summary>
+            <p>Export → Download PDF uses the browser's native print engine for crisp vector output with real pagination and working hyperlinks.</p>
+          </details>
+          <details>
+            <summary>What browsers are supported?</summary>
+            <p>Any modern browser with ES Modules support: Chrome, Firefox, Safari, Edge, Brave, and Arc, on desktop and mobile.</p>
+          </details>
+        </div>
+      </div>
+
+      <footer class="about-modal__footer">
+        <a href="https://github.com/invincible04/markdownlab" target="_blank" rel="noopener" class="about-modal__link">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.17c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58C20.57 21.79 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          Source on GitHub
+        </a>
+        <span class="about-modal__meta">MIT licensed · made with care</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- `defer` preserves document order and unblocks LCP/TTI.
+       app.js additionally gates on `await waitForLibs()`. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@3.1.3/lib/index.umd.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked-footnote@1.2.4/dist/index.umd.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.2.7/dist/purify.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <!-- katex auto-render.min.js omitted — our pipeline extracts $…$ /
+       $$…$$ and calls katex.renderToString directly. -->
+
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

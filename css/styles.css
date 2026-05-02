@@ -190,8 +190,18 @@ body > .statusbar { grid-row: 3; }
     0 10px 24px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .topbar__logo svg rect { fill: transparent; }
-.topbar__title { min-width: 0; }
-.topbar__title h1 {
+/* Column flex so brand + subtitle stack. The visually-hidden <h1> is
+   position:absolute and doesn't participate in flex layout. */
+.topbar__title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+}
+.topbar__title-brand {
+  display: inline-block;
   font-size: 15px; font-weight: 700; letter-spacing: -0.015em;
   margin: 0; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -374,6 +384,50 @@ body.is-fs .tabs { display: none; }
 body.is-focus .pane__header,
 body.is-fs .pane__header { display: none; }
 
+/* Skip link — WCAG 2.4.1 Bypass Blocks. Off-screen until focused. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 9999;
+  padding: 10px 14px;
+  background: var(--accent-b);
+  color: var(--bg);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  text-decoration: none;
+  transform: translateY(-150%);
+  transition: transform 140ms ease-out;
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 35%, transparent);
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent-b);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skip-link { transition: none; }
+}
+
+/* Visually-hidden utility (WebAIM recipe). Keeps the element in the
+   a11y tree and rendered DOM for crawlers/screen readers. Both `clip`
+   and `clip-path` are needed for full SR coverage. Do NOT replace with
+   display:none / visibility:hidden — both drop the a11y node. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Visually-hidden file inputs. We do NOT use the `hidden` attribute here:
    in some browsers (Safari, older iOS) `.click()` on a `display:none` input
    is silently dropped, so the native file chooser never opens. Keeping the
@@ -387,6 +441,392 @@ body.is-fs .pane__header { display: none; }
   height: 1px;
   opacity: 0;
   overflow: hidden;
+}
+
+/* About modal.
+   Visibility contract: JS toggles `hidden` (authoritative, removes from
+   a11y tree) and `.is-open` (flips display:flex + animations). */
+
+.about-modal {
+  position: fixed; inset: 0;
+  display: none;
+  align-items: center; justify-content: center;
+  background: color-mix(in srgb, #000 55%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  z-index: 500;
+  animation: about-fade 180ms ease-out;
+  padding: 20px;
+}
+.about-modal.is-open { display: flex; }
+.about-modal[hidden] { display: none !important; }
+@keyframes about-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.about-modal__card {
+  width: min(720px, 100%);
+  max-height: 85vh;
+  display: flex; flex-direction: column;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: about-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes about-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+.about-modal__header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg-elev-2), var(--bg-elev-1));
+}
+.about-modal__brand {
+  display: flex; align-items: center; gap: 12px;
+  min-width: 0;
+}
+.about-modal__mark {
+  flex: 0 0 auto;
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent-b) 24%, transparent));
+}
+.about-modal__brand-text { min-width: 0; }
+.about-modal__brand-text h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  line-height: 1.2;
+}
+.about-modal__tagline {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+.about-modal__close {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+.about-modal__close:hover {
+  color: var(--text);
+  background: var(--bg-elev-3);
+  border-color: var(--border);
+}
+.about-modal__close:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.about-modal__body {
+  padding: 20px 22px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.about-modal__lede {
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.about-modal__lede strong { font-weight: 600; color: var(--text); }
+
+.about-modal__section-title {
+  margin: 16px 0 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+/* 2-col on desktop, 1-col on mobile. */
+.about-modal__features {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.about-modal__features > li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.about-modal__features > li:hover {
+  background: var(--bg-elev-3);
+  border-color: color-mix(in srgb, var(--accent-b) 30%, var(--border));
+}
+.about-modal__features > li > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent-b);
+}
+.about-modal__features > li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.about-modal__features > li strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+.about-modal__features > li span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.about-modal__features > li code,
+.about-modal__faq code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent-b) 10%, transparent);
+  color: var(--text);
+}
+
+/* Segmented tablist. Semantics (tablist/tab/tabpanel) live in HTML. */
+.about-modal__faq-tabs {
+  display: inline-flex;
+  padding: 3px;
+  margin: 0 0 12px;
+  gap: 2px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.about-modal__faq-tab {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+  user-select: none;
+}
+.about-modal__faq-tab:hover { color: var(--text); }
+.about-modal__faq-tab.is-active {
+  background: var(--bg-elev-1);
+  color: var(--text);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, #000 10%, transparent),
+    0 0 0 1px var(--border);
+  font-weight: 600;
+}
+.about-modal__faq-tab:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+.about-modal__faq-tab-count {
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  min-width: 16px;
+  text-align: center;
+}
+.about-modal__faq-tab.is-active .about-modal__faq-tab-count {
+  background: color-mix(in srgb, var(--accent-b) 18%, transparent);
+  color: var(--accent-b);
+}
+
+/* Compact accordion — ± indicator + left accent when open. */
+.about-modal__faq {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  animation: about-faq-fade 180ms ease-out;
+}
+.about-modal__faq[hidden] { display: none; }
+@keyframes about-faq-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}
+.about-modal__faq details {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  overflow: hidden;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.about-modal__faq details[open] {
+  background: var(--bg-elev-3);
+  border-color: color-mix(in srgb, var(--accent-b) 22%, var(--border));
+  border-left-color: var(--accent-b);
+}
+.about-modal__faq summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 9px 12px 9px 14px;
+  padding-right: 34px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  position: relative;
+  transition: color 150ms ease;
+  user-select: none;
+  line-height: 1.4;
+}
+.about-modal__faq summary::-webkit-details-marker { display: none; }
+/* ± indicator: horizontal bar stays, vertical bar rotates + fades on open. */
+.about-modal__faq summary::before,
+.about-modal__faq summary::after {
+  content: "";
+  position: absolute;
+  right: 14px; top: 50%;
+  background: var(--text-muted);
+  border-radius: 1px;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), background 150ms ease, opacity 150ms ease;
+}
+.about-modal__faq summary::before {
+  width: 10px; height: 1.5px;
+  transform: translateY(-50%);
+}
+.about-modal__faq summary::after {
+  width: 1.5px; height: 10px;
+  transform: translate(-4.25px, -50%);
+}
+.about-modal__faq details[open] summary::before,
+.about-modal__faq details[open] summary::after {
+  background: var(--accent-b);
+}
+.about-modal__faq details[open] summary::after {
+  transform: translate(-4.25px, -50%) rotate(90deg);
+  opacity: 0;
+}
+.about-modal__faq summary:hover { color: var(--text); }
+.about-modal__faq summary:hover::before,
+.about-modal__faq summary:hover::after { background: var(--text); }
+.about-modal__faq summary:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.about-modal__faq details > p {
+  margin: 0;
+  padding: 2px 14px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  animation: about-faq-answer 220ms ease-out;
+}
+@keyframes about-faq-answer {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+.about-modal__faq details > p a {
+  color: var(--accent-b);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-b) 40%, transparent);
+  transition: border-color 150ms ease;
+}
+.about-modal__faq details > p a:hover { border-bottom-color: var(--accent-b); }
+
+.about-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.about-modal__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--bg-elev-3);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.about-modal__link:hover {
+  background: color-mix(in srgb, var(--accent-b) 14%, var(--bg-elev-3));
+  border-color: color-mix(in srgb, var(--accent-b) 40%, var(--border));
+}
+.about-modal__link:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+.about-modal__meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 640px) {
+  .about-modal { padding: 12px; }
+  .about-modal__card { max-height: 92vh; }
+  .about-modal__header { padding: 14px 16px; }
+  .about-modal__brand-text h2 { font-size: 16px; }
+  .about-modal__body { padding: 16px 16px 4px; }
+  .about-modal__features { grid-template-columns: 1fr; gap: 8px; }
+  .about-modal__faq-tabs { display: flex; width: 100%; }
+  .about-modal__faq-tab { flex: 1; justify-content: center; }
+  .about-modal__footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  .about-modal__meta { text-align: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .about-modal,
+  .about-modal__card,
+  .about-modal__features > li,
+  .about-modal__faq,
+  .about-modal__faq details > p,
+  .about-modal__faq-tab,
+  .about-modal__faq summary::before,
+  .about-modal__faq summary::after,
+  .about-modal__link,
+  .about-modal__close {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* Browsers paint default white over the fullscreen root — force our bg. */

@@ -1,0 +1,21 @@
+# robots.txt — MarkdownLab
+# https://markdownlab.vercel.app/robots.txt
+#
+# Single-page static app: index everything. Explicitly allowing asset
+# paths helps crawlers that penalize blocked JS/CSS when rendering.
+
+User-agent: *
+Allow: /
+Allow: /css/
+Allow: /js/
+Allow: /*.js$
+Allow: /*.css$
+Allow: /*.svg$
+Allow: /*.png$
+Allow: /*.webmanifest$
+
+# To opt out of an AI crawler, add a block like:
+# User-agent: GPTBot
+# Disallow: /
+
+Sitemap: https://markdownlab.vercel.app/sitemap.xml

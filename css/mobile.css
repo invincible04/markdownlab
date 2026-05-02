@@ -122,15 +122,22 @@
     gap: 8px;
     min-width: 0;
   }
+  /* Hide logo and visible brand span — the narrow bar only shows the
+     filename/autosave indicator. The visually-hidden <h1> stays in the
+     a11y tree. */
   .topbar__logo,
-  .topbar__title h1 { display: none; }
+  .topbar__title-brand { display: none; }
 
+  /* Reset desktop column layout: single left-aligned horizontal row. */
   .topbar__title {
     flex: 1;
     min-width: 0;
     padding: 0;
     display: flex;
+    flex-direction: row;
     align-items: center;
+    justify-content: flex-start;
+    gap: 0;
   }
 
   .topbar__brand .topbar__subtitle {

@@ -81,7 +81,6 @@ export function openPalette(initial = '') {
   if (!els.root) return;
   _focusBeforeOpen = document.activeElement;
   els.root.classList.add('is-open');
-  els.root.setAttribute('aria-hidden', 'false');
   els.input.value = initial;
   update();
   setTimeout(() => els.input.focus(), 10);
@@ -90,7 +89,6 @@ export function openPalette(initial = '') {
 export function closePalette() {
   if (!els.root) return;
   els.root.classList.remove('is-open');
-  els.root.setAttribute('aria-hidden', 'true');
   els.input?.removeAttribute('aria-activedescendant');
   const prev = _focusBeforeOpen;
   _focusBeforeOpen = null;

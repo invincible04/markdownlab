@@ -100,6 +100,16 @@ Promise.resolve().then(() => init()).catch(err => {
     String(err?.stack || err?.message || err).replace(/</g,'&lt;') + '</pre>';
 });
 
+// Register the service worker for offline support. Deferred to `load`
+// so SW cache-warmup doesn't compete with critical resources on first
+// paint. HTTPS-only; file:// and http:// skip.
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+      .catch(err => console.warn('Service worker registration failed:', err));
+  });
+}
+
 async function init() {
   await waitForLibs();
   installDomPurifyHooks();
@@ -140,6 +150,19 @@ async function init() {
     },
     onCreate: (id) => switchToFile(id),
   });
+
+  // Consume `?action=new` from the PWA manifest shortcut. Runs after
+  // projects + tabs init so newFileInActive can attach and open a tab.
+  // replaceState strips the param so reloads don't keep spawning files.
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get('action') === 'new') {
+      await newFileInActive();
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch (err) {
+    console.warn('Ignoring query-param action:', err);
+  }
 
   initPalette({
     onOpenFile: (id) => switchToFile(id),
@@ -1762,7 +1785,6 @@ function openLightbox(mermaidEl) {
   lightbox.canvas.appendChild(clone);
   lightbox.sourceTitle = mermaidEl.id || 'diagram';
   lightbox.root.classList.add('is-open');
-  lightbox.root.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
   lightbox._returnFocusTo = document.activeElement;
   installFocusTrap(lightbox.root);
@@ -1780,7 +1802,6 @@ function openLightbox(mermaidEl) {
 
 function closeLightbox() {
   lightbox.root.classList.remove('is-open');
-  lightbox.root.setAttribute('aria-hidden', 'true');
   lightbox.canvas.innerHTML = '';
   document.body.style.overflow = '';
   releaseFocusTrap(lightbox.root);
@@ -1796,11 +1817,20 @@ function closeLightbox() {
 // install/release calls are idempotent.
 function installFocusTrap(root) {
   if (!root || root._focusTrap) return;
+  // offsetParent alone is unreliable (null for position:fixed regardless
+  // of visibility), so check bounding box + computed style.
+  const isVisible = (el) => {
+    if (!el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
+  };
   const handler = (e) => {
     if (e.key !== 'Tab') return;
     const focusables = Array.from(root.querySelectorAll(
       'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )).filter(el => el.offsetParent !== null);
+    )).filter(isVisible);
     if (focusables.length === 0) { e.preventDefault(); return; }
     const first = focusables[0], last = focusables[focusables.length - 1];
     const active = document.activeElement;
@@ -3620,6 +3650,7 @@ function bindUI() {
   });
 
   document.getElementById('btn-shortcuts')?.addEventListener('click', toggleShortcuts);
+  document.getElementById('btn-about')?.addEventListener('click', toggleAbout);
   document.getElementById('btn-palette')?.addEventListener('click', () => openPalette());
 
   // Sidebar search focus shortcut — `/` from any non-typing context focuses
@@ -4289,6 +4320,8 @@ function registerKeyboardShortcuts() {
     if (e.key === 'Escape') {
       const sc = document.getElementById('shortcuts-overlay');
       if (sc?.classList.contains('is-open')) { e.preventDefault(); hideShortcuts(); return; }
+      const am = document.getElementById('about-modal');
+      if (am?.classList.contains('is-open')) { e.preventDefault(); hideAbout(); return; }
       if (document.getElementById('palette')?.classList.contains('is-open')) {
         e.preventDefault(); closePalette(); return;
       }
@@ -4540,7 +4573,9 @@ function buildShortcutsOverlay() {
   root.setAttribute('role', 'dialog');
   root.setAttribute('aria-modal', 'true');
   root.setAttribute('aria-label', 'Keyboard shortcuts');
-  root.setAttribute('aria-hidden', 'true');
+  // No aria-hidden toggling — `.is-open` + display:none controls
+  // visibility. Toggling aria-hidden on role="dialog" is a WAI-ARIA
+  // APG anti-pattern (can trigger "hidden dialog" announcements).
 
   const body = SHORTCUTS.map(g => `
     <section class="shortcuts__group">
@@ -4570,7 +4605,6 @@ function showShortcuts() {
   buildShortcutsOverlay();
   const root = document.getElementById('shortcuts-overlay');
   root.classList.add('is-open');
-  root.setAttribute('aria-hidden', 'false');
   root._returnFocusTo = document.activeElement;
   installFocusTrap(root);
   setTimeout(() => root.querySelector('.shortcuts__close')?.focus(), 10);
@@ -4579,7 +4613,6 @@ function hideShortcuts() {
   const root = document.getElementById('shortcuts-overlay');
   if (!root) return;
   root.classList.remove('is-open');
-  root.setAttribute('aria-hidden', 'true');
   releaseFocusTrap(root);
   const prev = root._returnFocusTo;
   root._returnFocusTo = null;
@@ -4591,6 +4624,100 @@ function toggleShortcuts() {
   const root = document.getElementById('shortcuts-overlay');
   if (root?.classList.contains('is-open')) hideShortcuts();
   else showShortcuts();
+}
+
+// ─── About modal ─────────────────────────────────────────────
+// Markup lives in index.html so crawlers (including AI bots) read the
+// full copy and FAQ. JS only toggles visibility and wires FAQ tabs.
+//
+// Visibility contract (shared with Shortcuts overlay):
+//   `hidden`     — authoritative for closed state (drops a11y node)
+//   `.is-open`   — flips display:flex + animations
+//   focus trap installed on open, focus restored on close
+//   no aria-hidden (WAI-ARIA APG anti-pattern on role="dialog")
+function showAbout() {
+  const root = document.getElementById('about-modal');
+  if (!root) return;
+  root.hidden = false;
+  root.classList.add('is-open');
+  root._returnFocusTo = document.activeElement;
+  installFocusTrap(root);
+  // Lazy one-time wiring — users who never open the modal pay no cost.
+  if (!root._initialized) {
+    root.addEventListener('click', (e) => { if (e.target === root) hideAbout(); });
+    root.querySelector('#btn-about-close')?.addEventListener('click', hideAbout);
+    initAboutFaqTabs(root);
+    root._initialized = true;
+  }
+  setTimeout(() => root.querySelector('#btn-about-close')?.focus(), 10);
+}
+
+function hideAbout() {
+  const root = document.getElementById('about-modal');
+  if (!root) return;
+  root.classList.remove('is-open');
+  // Defer `hidden` so the fade-out animation plays. The is-open check
+  // guards against a quick reopen within the 200ms window.
+  setTimeout(() => { if (!root.classList.contains('is-open')) root.hidden = true; }, 200);
+  releaseFocusTrap(root);
+  const prev = root._returnFocusTo;
+  root._returnFocusTo = null;
+  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+    try { prev.focus(); } catch {}
+  }
+}
+
+function toggleAbout() {
+  const root = document.getElementById('about-modal');
+  if (root?.classList.contains('is-open')) hideAbout();
+  else showAbout();
+}
+
+// WAI-ARIA "Tabs with Automatic Activation": click or arrow-key selects
+// + activates the panel. Only the active tab is in the tab order; Tab
+// exits the tablist. Panels stay in the DOM (only `hidden` flips) so
+// crawlers see every FAQ regardless of active tab.
+function initAboutFaqTabs(root) {
+  const tabs = Array.from(root.querySelectorAll('.about-modal__faq-tab'));
+  if (!tabs.length) return;
+
+  const activate = (tab, focus) => {
+    tabs.forEach(t => {
+      const panel = document.getElementById(t.getAttribute('aria-controls'));
+      const isActive = t === tab;
+      t.setAttribute('aria-selected', String(isActive));
+      t.tabIndex = isActive ? 0 : -1;
+      t.classList.toggle('is-active', isActive);
+      if (panel) panel.hidden = !isActive;
+    });
+    if (focus) tab.focus();
+  };
+
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => activate(tab, false));
+    tab.addEventListener('keydown', (e) => {
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'ArrowDown':
+          e.preventDefault();
+          activate(tabs[(i + 1) % tabs.length], true);
+          break;
+        case 'ArrowLeft':
+        case 'ArrowUp':
+          e.preventDefault();
+          activate(tabs[(i - 1 + tabs.length) % tabs.length], true);
+          break;
+        case 'Home':
+          e.preventDefault();
+          activate(tabs[0], true);
+          break;
+        case 'End':
+          e.preventDefault();
+          activate(tabs[tabs.length - 1], true);
+          break;
+      }
+    });
+  });
 }
 
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:') {

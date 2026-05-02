@@ -1,0 +1,65 @@
+# MarkdownLab
+
+> A free, open-source, browser-based markdown editor with live preview. Supports GitHub Flavored Markdown, Mermaid diagrams, KaTeX / LaTeX math, and syntax-highlighted code. Runs entirely client-side — no server, no account, no tracking.
+
+MarkdownLab is a single-page web application at https://markdownlab.vercel.app/. It is designed for developers, technical writers, students, and anyone who needs to write or preview markdown with rich content. Documents are stored locally in IndexedDB on the user's device and never leave the browser.
+
+## Key facts
+
+- **URL:** https://markdownlab.vercel.app/
+- **Source:** https://github.com/invincible04/markdownlab
+- **License:** MIT
+- **Price:** Free. No sign-up, no paid tiers, no feature gates.
+- **Privacy:** No backend, no analytics, no cookies. Documents live in IndexedDB on the user's device.
+- **Technology:** Vanilla HTML / CSS / JavaScript (ES modules). No framework. Uses marked (parser), DOMPurify (sanitizer), highlight.js (syntax highlighting), KaTeX (math), and Mermaid (diagrams).
+- **Offline:** Works without an internet connection after the first load.
+
+## Feature summary
+
+- Live split-view markdown preview with optional editor/preview scroll sync.
+- Full GitHub Flavored Markdown (GFM) support: tables, task lists, strikethrough, autolinks, footnotes, fenced code blocks, heading anchors.
+- Mermaid diagrams: flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie, journey, gitgraph. Click any diagram to zoom; export as 2× PNG.
+- KaTeX math: inline `$...$` and block `$$...$$`. Full LaTeX math-mode syntax.
+- Syntax highlighting across 190+ languages via highlight.js.
+- Multi-file projects with sidebar tree, draggable tabs, and a `Ctrl/Cmd + P` command palette.
+- Export to HTML (self-contained, offline-ready), PDF (vector text via browser print), or Markdown source.
+- Find and replace with regex, case-sensitive, and whole-word toggles.
+- Drag-and-drop `.md`, `.markdown`, or `.txt` imports. Folder import supported.
+- Dark and light themes (WCAG AA contrast).
+- Focus mode, reading mode with prose typography.
+- PWA installable — add to home screen on mobile.
+
+## Typical use cases
+
+- Writing README files for GitHub, GitLab, Bitbucket.
+- Technical documentation with embedded Mermaid architecture diagrams.
+- Academic notes and papers with LaTeX-quality math, exported to PDF.
+- Engineering design docs with sequence and ER diagrams.
+- Blog post drafts, meeting notes, journaling.
+
+## Keyboard shortcuts
+
+- `Ctrl/Cmd + P` — quick open / command palette
+- `Ctrl/Cmd + O` — upload markdown file(s)
+- `Ctrl/Cmd + N` — new file
+- `Ctrl/Cmd + S` — save current file
+- `Ctrl/Cmd + W` — close current tab
+- `Ctrl/Cmd + Tab` — cycle tabs
+- `Ctrl/Cmd + B` — toggle sidebar
+- `Ctrl/Cmd + K` — toggle dark / light theme
+- `Ctrl/Cmd + L` — toggle table of contents
+- `Ctrl/Cmd + .` — toggle focus mode
+- `Ctrl/Cmd + 1/2/3` — editor / split / preview views
+- `Ctrl/Cmd + F` — find in file
+- `Ctrl/Cmd + H` (or `Ctrl/Cmd + Shift + F`) — find and replace
+- `?` — show all keyboard shortcuts overlay
+
+## Primary documents
+
+- [Homepage / live editor](https://markdownlab.vercel.app/)
+- [GitHub repository](https://github.com/invincible04/markdownlab)
+- [README](https://github.com/invincible04/markdownlab#readme)
+
+## Optional
+
+- [License (MIT)](https://github.com/invincible04/markdownlab/blob/main/LICENSE)

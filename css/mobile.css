@@ -1,0 +1,1338 @@
+/* ============================================================================
+ * MarkdownLab — mobile.css (complete rewrite)
+ *
+ * A native-feeling, content-first mobile experience. Loaded AFTER styles.css
+ * so the cascade lets us override desktop rules inside @media blocks without
+ * touching a single line of the desktop stylesheet.
+ *
+ * Architecture on phone:
+ *   · Compact 52px topbar  →  [☰ hamburger] [ filename (flex) ] [export] [theme]
+ *   · Main surface         →  single pane (editor OR preview, never split)
+ *   · Bottom segmented bar →  "Write" / "Read" pill, above the status bar
+ *   · Sidebar               →  slide-in drawer from the left with scrim + blur
+ *
+ * The original .segmented control (which sits inside .topbar__nav and has
+ * three children: Editor / Split / Preview) is REPOSITIONED via CSS to the
+ * bottom of the viewport. The Split button is hidden; the remaining two
+ * buttons are relabelled to "Write" / "Read" via generated content. No HTML
+ * or JS changes are required — data-view click handlers continue to work.
+ *
+ * Breakpoints (aligned with js/sidebar.js WIDE_QUERY = 881px):
+ *   ≤ 900px  primary mobile breakpoint (topbar, bottom bar, editor/preview)
+ *   ≤ 880px  sidebar becomes a drawer (rule lives in styles.css; we style scrim)
+ *   ≤ 560px  small phone — tighten further
+ *   ≤ 380px  tiny phone — iPhone SE class
+ *   short-height & landscape — keyboard-friendly trims
+ *
+ * Design system:
+ *   · Min touch target ≥ 44×44pt (Apple HIG) / ≥ 48×48dp (Material)
+ *   · 4/8 pt spacing grid
+ *   · env(safe-area-inset-*) on every fixed element
+ *   · Enter 250ms ease-out, exit 180ms ease-in, micro 120-150ms
+ *   · prefers-reduced-motion respected
+ *   · Zero hardcoded colors — everything via CSS custom properties
+ * ============================================================================ */
+
+
+/* ==========================================================================
+ * 1. Global mobile baseline (≤ 900px)
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  /* Prevent rogue children from creating a horizontal scrollbar on the
+     document. Individual blocks (code, tables, diagrams) still scroll
+     horizontally inside their own boxes.  `overflow-x: clip` is preferred
+     over `hidden` — it avoids the scrollbar-artifact reflow on iOS. */
+  html, body {
+    overflow-x: hidden;
+    overflow-x: clip;
+    overscroll-behavior-y: none;
+  }
+
+  /* dvh (dynamic viewport height) makes fixed chrome correct as iOS Safari's
+     URL bar shows/hides. svh/lvh fallback is implicit when unsupported. */
+  body {
+    min-height: 100dvh;
+  }
+
+  /* Kill the 300 ms tap delay and the blue tap-highlight glow. */
+  button,
+  a,
+  input,
+  textarea,
+  [role="button"],
+  .btn,
+  .tab,
+  .dropdown__item,
+  .sidebar__item,
+  .segmented__item,
+  .palette__list li {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Accent-tab nav appearance for form fields on iOS. */
+  input, textarea, select { -webkit-appearance: none; appearance: none; }
+
+  /* Keep the body grid stable — even though the topbar/statusbar heights
+     change on mobile, the CSS variables below update them in place so
+     the rows resize without shifting the shell. */
+  :root {
+    --topbar-h: calc(52px + env(safe-area-inset-top));
+    --statusbar-h: calc(30px + env(safe-area-inset-bottom));
+    --bottom-bar-h: 52px;  /* floating pill segmented bar */
+  }
+}
+
+
+/* ==========================================================================
+ * 2. Topbar redesign (≤ 900px)
+ *
+ * Layout: [☰ menu] [filename + state] [··· upload · theme · export ]
+ * - Solid elevated surface, subtle hairline divider below
+ * - Hamburger reads as a real button (surface + active state)
+ * - Filename is the hero: bold, ellipsed, with the autosave state as a
+ *   subtle dot+color chip that never pushes the name out of view
+ * - Action cluster: 40×40 icon buttons with a small divider before the
+ *   accent-gradient Export pill (the primary action)
+ * The view-mode segmented control moves to a floating bottom bar (§4).
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  .topbar {
+    grid-template-columns: auto 1fr auto;
+    gap: 6px;
+    padding: 0 8px;
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-top: env(safe-area-inset-top);
+    min-height: 52px;
+    /* backdrop-filter creates a containing block for position:fixed children,
+       which would break the bottom bar. Opt out and use a solid surface. */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 40%, transparent);
+  }
+  .topbar::before { display: none; }
+
+  /* --- Brand cluster: just the hamburger + filename on mobile. ----------- */
+  .topbar__brand {
+    gap: 8px;
+    min-width: 0;
+  }
+  .topbar__logo,
+  .topbar__title h1 { display: none; }
+
+  .topbar__title {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .topbar__brand .topbar__subtitle {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    max-width: 100%;
+    min-width: 0;
+    font-feature-settings: "tnum";
+  }
+  .topbar__brand .topbar__subtitle::before { display: none; }
+
+  .topbar__brand .topbar__subtitle-name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    line-height: 1.2;
+  }
+  .topbar__brand .topbar__subtitle-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    /* Override the " · " separator from desktop — we use a colored dot instead. */
+  }
+  .topbar__brand .topbar__subtitle-state::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success, #10b981);
+    margin-right: 0;
+    opacity: 1;
+  }
+  .topbar__brand .topbar__subtitle-state[data-state="dirty"]::before { background: var(--accent); }
+  .topbar__brand .topbar__subtitle-state[data-state="error"]::before { background: var(--danger, #ef4444); }
+
+  /* --- Hamburger: 40×40 with a visible surface on press ------------------ */
+  .topbar__sidebar-toggle {
+    min-width: 40px;
+    min-height: 40px;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid transparent;
+    transition:
+      background 140ms var(--ease-out),
+      border-color 140ms var(--ease-out),
+      transform 120ms var(--ease-out);
+  }
+  .topbar__sidebar-toggle:hover {
+    background: color-mix(in srgb, var(--bg-elev-3) 70%, transparent);
+  }
+  .topbar__sidebar-toggle:active {
+    background: var(--bg-elev-3);
+    border-color: var(--border);
+    transform: scale(0.94);
+  }
+  .topbar__sidebar-toggle[aria-pressed="true"] {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  /* --- Hide view-mode segmented; it's relocated to the bottom bar. -------- */
+  .topbar__nav { display: none; }
+
+  /* --- Hide secondary actions that don't survive on mobile. --------------- */
+  #btn-palette,
+  #btn-focus,
+  .topbar__actions [data-dropdown="examples"] { display: none; }
+
+  /* --- Action cluster: Upload · Theme · | · Export ----------------------- */
+  .topbar__actions {
+    gap: 4px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  /* Subtle vertical divider between the icon triad and the primary Export
+     pill — gives the action cluster a clear "primary + secondary" hierarchy. */
+  .topbar__actions [data-dropdown="export"] {
+    position: relative;
+    margin-left: 6px;
+    padding-left: 8px;
+  }
+  .topbar__actions [data-dropdown="export"]::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    opacity: 0.7;
+  }
+
+  /* Collapse the split-button cluster to just its main Upload button. */
+  .topbar__actions .split-btn {
+    display: inline-flex;
+    align-items: center;
+  }
+  .topbar__actions .split-btn__caret,
+  .topbar__actions .split-btn .dropdown__menu { display: none; }
+
+  /* Icon buttons: 40×40, uniform radius, consistent press feedback. */
+  .topbar__actions .btn--icon,
+  .topbar__actions #btn-upload {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    justify-content: center;
+    gap: 0;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    transition:
+      color 140ms var(--ease-out),
+      background 140ms var(--ease-out),
+      border-color 140ms var(--ease-out),
+      transform 120ms var(--ease-out);
+  }
+  .topbar__actions .btn--icon:hover,
+  .topbar__actions #btn-upload:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg-elev-3) 70%, transparent);
+  }
+  .topbar__actions .btn--icon:active,
+  .topbar__actions #btn-upload:active {
+    background: var(--bg-elev-3);
+    border-color: var(--border);
+    transform: scale(0.94);
+  }
+  .topbar__actions #btn-upload > span { display: none; }
+
+  /* Export: compact accent-gradient pill, matches icon-button height (40px)
+     for a clean baseline. Keeps "Export" label since it's the primary action. */
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+    padding: 0 14px;
+    height: 40px;
+    min-height: 40px;
+    border-radius: 10px;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger > span {
+    display: inline;
+  }
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger .dropdown__caret,
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger .btn__kbd { display: none; }
+
+  /* Dropdown menus open from topbar: anchor to the right edge. */
+  .topbar .dropdown__menu {
+    right: 0;
+    left: auto;
+    min-width: 260px;
+  }
+}
+
+
+/* ==========================================================================
+ * 3. Shell grid fix & pane layout (≤ 880px, matches drawer breakpoint)
+ *
+ * When the sidebar becomes position:fixed, it leaves the grid flow. The
+ * shell would then render two 1fr columns (sidebar placeholder + workspace)
+ * unless we collapse to a single column.
+ * ========================================================================== */
+@media (max-width: 880px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Panes collapse to a single column: show either the editor OR the
+     preview, never both (no side-by-side on 375px).
+     CRITICAL: styles.css has `.panes[data-view='editor'] { grid-template-columns: 1fr 0 0 }`
+     and `.panes[data-view='preview'] { grid-template-columns: 0 0 1fr }` which
+     have specificity (0,2,0) — higher than our `.panes` (0,1,0). Override
+     BOTH with matching attribute-selectors so the cascade order wins. */
+  .panes,
+  .panes[data-view='split'],
+  .panes[data-view='editor'],
+  .panes[data-view='preview'] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+  .panes .resizer { display: none; }
+  .panes .pane--editor,
+  .panes .pane--preview { grid-column: 1; }
+
+  /* Map data-view states — note the app boots with data-view='split'. */
+  .panes[data-view='split']   .pane--editor  { display: flex; }
+  .panes[data-view='split']   .pane--preview { display: none; }
+  .panes[data-view='editor']  .pane--editor  { display: flex; }
+  .panes[data-view='editor']  .pane--preview { display: none; }
+  .panes[data-view='preview'] .pane--editor  { display: none; }
+  .panes[data-view='preview'] .pane--preview { display: flex; }
+
+  /* Smooth 200 ms crossfade when the user toggles write ↔ read. */
+  .pane {
+    animation: mobile-pane-fade 220ms var(--ease-out);
+  }
+  @keyframes mobile-pane-fade {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+
+/* ==========================================================================
+ * 4. Bottom floating view switcher (Write / Read)
+ *
+ * We repurpose the existing .segmented control from the topbar by making
+ * it position: fixed to the bottom of the screen. The original "Split"
+ * button is hidden; the two remaining buttons are relabelled via
+ * generated content (the inline text is zeroed out; ::after paints the
+ * new label). JS click handlers still fire on data-view.
+ *
+ * Sits above the statusbar with backdrop-blur, respects safe-area-bottom.
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  /* Make the .topbar__nav container a fixed-position wrapper at the bottom.
+     Note: the parent visibility (display:none above) WAS hiding this — we
+     need to UN-hide it and instead relocate it. Override Section 2's
+     `.topbar__nav { display: none; }` by targeting a deeper selector. */
+  .topbar .topbar__nav {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--statusbar-h);
+    z-index: 40;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    justify-content: center;
+    pointer-events: none;          /* children re-enable */
+    background: linear-gradient(
+      180deg,
+      transparent 0%,
+      color-mix(in srgb, var(--bg) 35%, transparent) 50%,
+      color-mix(in srgb, var(--bg) 80%, transparent) 100%
+    );
+  }
+
+  /* The pill itself: wide, thumb-friendly, glass-morphism. */
+  .topbar .topbar__nav .segmented {
+    pointer-events: auto;
+    width: min(420px, 100%);
+    padding: 4px;
+    gap: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-elev-1) 82%, transparent);
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.1) inset,
+      0 8px 24px rgba(0,0,0,0.3),
+      0 2px 6px rgba(0,0,0,0.12);
+  }
+  :root[data-theme='light'] .topbar .topbar__nav .segmented {
+    background: color-mix(in srgb, var(--bg-elev-1) 92%, transparent);
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.7) inset,
+      0 8px 24px rgba(15,23,42,0.12),
+      0 2px 6px rgba(15,23,42,0.06);
+  }
+
+  /* Hide the Split button — there's no split on mobile. */
+  .topbar .topbar__nav .segmented__item[data-view="split"] { display: none; }
+
+  /* Two-up layout; each segment claims half the pill. */
+  .topbar .topbar__nav .segmented__item {
+    flex: 1 1 50%;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    gap: 8px;
+    justify-content: center;
+    color: var(--text-muted);
+    transition:
+      color 180ms var(--ease-out),
+      background 180ms var(--ease-out),
+      transform 120ms var(--ease-out);
+    /* Zero-out the inline text node; ::after will provide the new label. */
+    font-size: 0;
+  }
+
+  .topbar .topbar__nav .segmented__item > svg {
+    font-size: 16px;  /* no-op for SVG, safety */
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  /* Relabel: "Editor" → "Write", "Preview" → "Read" (spec requirement). */
+  .topbar .topbar__nav .segmented__item[data-view="editor"]::after {
+    content: "Write";
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .topbar .topbar__nav .segmented__item[data-view="preview"]::after {
+    content: "Read";
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  /* Active pill: accent-tinted background, white text, subtle lift. */
+  .topbar .topbar__nav .segmented__item.is-active {
+    color: var(--text);
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 18%, var(--bg-elev-2)),
+      color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2)));
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.12) inset,
+      0 2px 6px color-mix(in srgb, var(--accent) 24%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .topbar .topbar__nav .segmented__item.is-active > svg {
+    color: var(--accent);
+    opacity: 1;
+  }
+
+  /* Tap feedback: scale + darken. */
+  .topbar .topbar__nav .segmented__item:active {
+    transform: scale(0.96);
+  }
+  .topbar .topbar__nav .segmented__item:not(.is-active):active {
+    background: color-mix(in srgb, var(--bg-elev-3) 60%, transparent);
+  }
+
+  /* Bottom padding on the panes so the bottom bar never obscures content.
+     `--bottom-bar-h` + statusbar + safe-area  already baked-in via the
+     editor/preview padding below; this is for any future scrollable pane. */
+}
+
+
+/* ==========================================================================
+ * 5. Sidebar drawer + scrim polish (≤ 880px)
+ *
+ * styles.css already positions the sidebar as fixed off-canvas. We:
+ *   · upgrade the scrim to a full backdrop-blurred overlay (4px)
+ *   · add a spring-like easing on the drawer slide
+ *   · ensure the drawer sits above the bottom bar AND covers the top bar
+ *     on mobile (user wants focus on files when the drawer is open)
+ *   · fade the scrim in over 250ms
+ * ========================================================================== */
+@media (max-width: 880px) {
+
+  /* Drawer chrome. styles.css gives it transform:translateX(-100%) → we
+     just refine the animation curve + shadow. */
+  .sidebar {
+    top: 0;                           /* cover the topbar for a true modal feel */
+    bottom: 0;
+    height: 100dvh;
+    width: min(86vw, 340px);
+    z-index: 70;                      /* above scrim (55) and bottom bar (40) */
+    background: var(--bg-elev-1);
+    border-right: 1px solid var(--border);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent),
+      32px 0 64px -16px rgba(0,0,0,0.45);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: calc(env(safe-area-inset-bottom) + 8px);
+    transition:
+      transform 280ms cubic-bezier(0.32, 0.72, 0, 1),    /* iOS-like spring */
+      visibility 0s linear 280ms,
+      opacity 200ms var(--ease-out) 80ms;
+    /* Reserve horizontal pans for JS (swipe-to-close); keep vertical native. */
+    touch-action: pan-y;
+  }
+  :root[data-theme='light'] .sidebar {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 5%, transparent),
+      32px 0 64px -16px rgba(15,23,42,0.18);
+  }
+  .shell[data-sidebar='open'] .sidebar {
+    transition:
+      transform 320ms cubic-bezier(0.32, 0.72, 0, 1),
+      visibility 0s linear 0s,
+      opacity 200ms var(--ease-out);
+  }
+
+  /* Scrim (injected by js/sidebar.js#ensureScrim as .sidebar-scrim). */
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;                         /* full-screen; covers statusbar + bottom bar too */
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.48);
+    backdrop-filter: blur(4px) saturate(110%);
+    -webkit-backdrop-filter: blur(4px) saturate(110%);
+    z-index: 65;                      /* under sidebar (70), over bottom bar (40) */
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 250ms var(--ease-out), backdrop-filter 250ms var(--ease-out);
+    will-change: opacity;
+  }
+  .shell[data-sidebar='open'] .sidebar-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Swipe-to-close: disable transitions so inline transform/opacity from
+     the touch handler tracks the finger without interpolation lag. */
+  .sidebar.is-swiping,
+  .sidebar-scrim.is-swiping {
+    transition: none !important;
+  }
+
+  /* Body-scroll lock — paired with js/sidebar.js touchmove preventDefault. */
+  body.is-drawer-open {
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  /* Drawer content: comfortable touch-friendly spacing. */
+  .sidebar__search { padding: 14px 14px 10px; }
+  .sidebar__search-input {
+    font-size: 16px;                  /* prevent iOS focus auto-zoom */
+    padding: 12px 14px 12px 40px;
+    min-height: 44px;
+    border-radius: 10px;
+  }
+  .sidebar__search-kbd { display: none; }
+
+  .sidebar__header { padding: 12px 14px 8px; }
+  .sidebar__icon-btn {
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 8px;
+  }
+  .sidebar__icon-btn:active { transform: scale(0.94); }
+
+  .sidebar__item,
+  .file-item,
+  .project__header {
+    min-height: 44px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .sidebar__item:active,
+  .file-item:active,
+  .project__header:active {
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+  }
+
+  .sidebar__resizer { display: none; }
+  .sidebar__footer {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+}
+
+
+/* ==========================================================================
+ * 6. Pane header & editor polish (≤ 900px)
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  /* Pane header: a slim, flush-left meta strip. Sync toggle on editor,
+     Outline toggle on preview. Hide decorative "Markdown" helper label. */
+  .pane__header {
+    padding: 6px 12px;
+    min-height: 42px;
+    gap: 8px;
+  }
+  .pane__tab {
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .pane--editor .pane__meta > span:last-child { display: none; }
+
+  /* Reading-mode switch label too verbose for mobile — show only the toggle. */
+  .pane--preview .switch__label { display: none; }
+  .pane--preview .switch { gap: 0; padding: 4px; }
+
+  /* Outline toggle — icon-only; hide text label but ensure 40×40 hit area. */
+  .pane__toggle-label { display: none; }
+  .pane__toggle {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0 10px;
+    justify-content: center;
+    border-radius: 8px;
+  }
+
+  /* Editor surface: 16px body, generous line-height, extra bottom padding
+     so the bottom bar never occludes the caret line. */
+  .editor,
+  .editor__mirror {
+    font-size: 16px;
+    line-height: 1.65;
+    padding: 20px 20px calc(var(--bottom-bar-h) + var(--statusbar-h) + 40px);
+    letter-spacing: -0.003em;
+    scroll-behavior: smooth;
+    overscroll-behavior: contain;
+  }
+
+  /* Hide the gutter (line numbers) — it's cramped and not useful on phone.
+     CRITICAL: editor__wrap is 48px|1fr, hiding the gutter leaves the
+     surface in the 48px column. Override to single column. */
+  .editor__gutter { display: none; }
+  .editor__wrap { grid-template-columns: 1fr; }
+
+  .editor__surface { contain: layout; }
+}
+
+
+/* ==========================================================================
+ * 7. Preview & markdown body mobile typography (≤ 900px)
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  /* Preview pane: TOC becomes a slide-in drawer (rules in styles.css
+     @ max-width: 1100px). Here we just ensure the layout is column-friendly
+     so anything under the preview flows correctly. */
+  .preview__layout { flex-direction: column; }
+
+  .preview__wrap {
+    overscroll-behavior: contain;
+  }
+
+  .preview {
+    max-width: 100%;
+    padding: 24px 20px calc(var(--bottom-bar-h) + var(--statusbar-h) + 48px);
+    font-size: 16px;
+    line-height: 1.6;
+    letter-spacing: -0.003em;
+  }
+  .preview.is-reading {
+    font-size: 17px;
+    line-height: 1.7;
+    padding: 32px 22px calc(var(--bottom-bar-h) + var(--statusbar-h) + 72px);
+    max-width: 100%;
+  }
+
+  /* Heading scale (spec): 28 / 22 / 18 / 16 down from desktop 32/24/20. */
+  .markdown-body h1 {
+    font-size: 28px;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    margin-top: 0.4em;
+  }
+  .markdown-body h2 {
+    font-size: 22px;
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+  }
+  .markdown-body h3 {
+    font-size: 18px;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+  }
+  .markdown-body h4 {
+    font-size: 16px;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+  }
+
+  /* Code blocks: edge-to-edge with horizontal scroll. */
+  .markdown-body pre {
+    font-size: 14px;
+    line-height: 1.55;
+    border-radius: 10px;
+    margin-left: -8px;
+    margin-right: -8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  .markdown-body pre code {
+    padding: 14px 16px;
+    font-size: 14px;
+  }
+
+  /* Inline code slightly larger so it doesn't disappear at 16px body. */
+  .markdown-body :not(pre) > code { font-size: 0.92em; }
+
+  /* Hover-gated affordances → always visible on touch. */
+  .markdown-body pre .code-copy,
+  .markdown-body pre .code-lang,
+  .diagram-expand { opacity: 1; }
+  .markdown-body pre .code-copy {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* Tables: the outer .table-wrap div (added by postProcess) already handles
+     horizontal scroll via overflow-x:auto. On mobile we just need to (a) let
+     cells keep their content on one line so narrow viewports scroll instead
+     of wrapping awkwardly, and (b) add right-edge fade indicators on the
+     wrapper so users know more content continues. Frontmatter tables opt
+     out — they reflow rather than scroll. */
+  .markdown-body .table-wrap {
+    background:
+      linear-gradient(to right, var(--surface) 30%, transparent),
+      linear-gradient(to right, transparent, var(--surface) 70%) 100% 0,
+      radial-gradient(farthest-side at 0 50%, rgba(0,0,0,0.14), transparent),
+      radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,0.14), transparent) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 32px 100%, 32px 100%, 14px 100%, 14px 100%;
+    background-attachment: local, local, scroll, scroll;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  :root[data-theme='light'] .markdown-body .table-wrap {
+    background:
+      linear-gradient(to right, var(--surface) 30%, transparent),
+      linear-gradient(to right, transparent, var(--surface) 70%) 100% 0,
+      radial-gradient(farthest-side at 0 50%, rgba(15,23,42,0.08), transparent),
+      radial-gradient(farthest-side at 100% 50%, rgba(15,23,42,0.08), transparent) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 32px 100%, 32px 100%, 14px 100%, 14px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
+  .markdown-body .table-wrap > table:not(.markdown-frontmatter) {
+    white-space: nowrap;
+  }
+  .markdown-body th,
+  .markdown-body td { padding: 10px 12px; }
+
+  /* Frontmatter table on mobile: keep the 2-col layout but tighten padding
+     and force wrapping (the generic selector's `nowrap` must not leak in). */
+  .markdown-body table.markdown-frontmatter {
+    font-size: 13.5px;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr > th,
+  .markdown-body table.markdown-frontmatter > tbody > tr > td {
+    padding: 9px 12px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr > th {
+    width: 34%;
+    max-width: 140px;
+    font-size: 12.5px;
+  }
+  .markdown-body .frontmatter-chips {
+    white-space: normal;
+  }
+  .markdown-body .frontmatter-chip {
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Mermaid / SVG diagrams: fit width. */
+  .markdown-body .mermaid,
+  .markdown-body svg {
+    max-width: 100%;
+    height: auto;
+  }
+}
+
+
+/* ==========================================================================
+ * 8. Tabs strip (≤ 900px)
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  .tabs { min-height: 40px; }
+  .tab {
+    min-width: 120px;
+    max-width: 200px;
+    min-height: 36px;
+    padding: 0 8px 0 12px;
+    font-size: 13px;
+  }
+  .tab__name { font-weight: 500; }
+  .tab__close {
+    width: 32px;
+    height: 32px;
+    padding: 4px;
+    border-radius: 6px;
+  }
+  .tab__close:active { transform: scale(0.9); }
+  .tabs__add {
+    width: 44px;
+    min-height: 40px;
+  }
+  .tabs__add:active { transform: scale(0.92); }
+}
+
+
+/* ==========================================================================
+ * 9. Status bar mobile simplification (≤ 900px)
+ *
+ * Hide chars/lines/render-time (developer-centric); keep status + words +
+ * reading time. Use tabular numerals for consistent metric spacing.
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  .statusbar {
+    grid-template-columns: auto 1fr auto;
+    padding: 0 12px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: env(safe-area-inset-bottom);
+    font-size: 11.5px;
+    gap: 8px;
+    min-height: 30px;
+    font-feature-settings: "tnum" 1;
+  }
+  .statusbar__group { gap: 8px; }
+  .statusbar__group--center { gap: 12px; }
+  .statusbar__group--center::before,
+  .statusbar__group--center::after { display: none; }
+
+  /* Hide developer-detail stats. Keep words + reading time. */
+  .statusbar .stat[title="Characters"],
+  .statusbar .stat[title="Lines"],
+  .statusbar .stat[title="Last render time"] { display: none; }
+
+  /* Hide tertiary links — shortcuts (keyboard-first) and GitHub. */
+  #btn-shortcuts,
+  #repo-link { display: none; }
+
+  /* Status dot: slightly smaller since the bar is tighter. */
+  .status-dot { width: 7px; height: 7px; }
+
+  /* Statusbar icons inside .stat — slightly smaller, no-wrap. */
+  .stat { white-space: nowrap; }
+  .stat svg { flex-shrink: 0; }
+}
+
+
+/* ==========================================================================
+ * 10. Find bar, palette, lightbox, drop overlay, dropdown, toast (≤ 900px)
+ * ========================================================================== */
+@media (max-width: 900px) {
+
+  /* Find bar (dynamically injected by app.js for ⌘F). 16px input prevents
+     iOS auto-zoom; 40×40 buttons. */
+  .find-bar__input {
+    font-size: 16px;
+    min-height: 40px;
+  }
+  .find-bar__btn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  .find-bar__toggle {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* Inline rename inputs inside the sidebar tree — 16px to prevent zoom. */
+  .file__name-input,
+  .project__name-input { font-size: 16px; }
+
+  /* Dropdown menus — taller rows for fat-fingers. */
+  .dropdown__menu {
+    min-width: 260px;
+    max-width: min(340px, calc(100vw - 24px));
+    border-radius: 12px;
+  }
+  .dropdown__item {
+    padding: 12px 14px;
+    min-height: 48px;
+  }
+  .dropdown__item:active {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+  }
+
+  /* Command palette — sheet style on mobile. */
+  .palette { padding-top: 8vh; }
+  .palette__card {
+    width: calc(100vw - 20px);
+    max-width: 560px;
+    border-radius: 14px;
+  }
+  .palette__input {
+    font-size: 16px;
+    min-height: 48px;
+    padding: 14px 16px 14px 44px;
+  }
+  .palette__list li {
+    min-height: 48px;
+    padding: 12px 14px;
+  }
+  .palette__footer {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 14px;
+  }
+
+  /* Lightbox — adapt toolbar to fit. */
+  .lightbox__toolbar {
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 8px;
+    top: env(safe-area-inset-top);
+    gap: 6px;
+  }
+  .lightbox__btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .lightbox__hint { display: none; }
+
+  /* Drop overlay — soften to feel like a native import sheet. */
+  .drop-overlay__card {
+    padding: 32px 28px;
+    margin: 0 20px;
+    border-radius: 16px;
+  }
+  .drop-overlay__card h2 { font-size: 18px; }
+  .drop-overlay__card p { font-size: 13px; }
+
+  /* Toast — clear of statusbar + bottom bar on mobile. */
+  .toast {
+    font-size: 13px;
+    padding: 10px 14px;
+    max-width: calc(100vw - 24px);
+    bottom: max(
+      calc(var(--statusbar-h) + var(--bottom-bar-h) + 16px),
+      calc(env(safe-area-inset-bottom) + var(--statusbar-h) + var(--bottom-bar-h) + 16px)
+    );
+  }
+
+  /* Focus dock — hidden via #btn-focus:none above, but if the user is
+     already in focus mode when they rotate into a mobile breakpoint, dock
+     must also be positioned above the statusbar safely. */
+  .focus-dock {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(
+      calc(var(--statusbar-h) + 12px),
+      calc(env(safe-area-inset-bottom) + var(--statusbar-h) + 12px)
+    );
+    padding: 4px;
+    gap: 2px;
+  }
+  .focus-dock__btn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  .focus-dock__label { display: none; }
+}
+
+
+/* ==========================================================================
+ * 11. Small phone (≤ 560px) — iPhone 12/13/14/15 standard-width range
+ * ========================================================================== */
+@media (max-width: 560px) {
+
+  /* Topbar already tight — shave a couple more pixels. */
+  .topbar {
+    padding: 0 2px;
+    padding-left: max(2px, env(safe-area-inset-left));
+    padding-right: max(2px, env(safe-area-inset-right));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  /* Export button loses its text; becomes a matching 40×40 icon button
+     so the whole action cluster reads as a uniform row on narrow phones. */
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+    min-width: 40px;
+    width: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger > span {
+    display: none;
+  }
+
+  /* Filename in the middle shrinks a hair. */
+  .topbar__brand .topbar__subtitle-name {
+    font-size: 14px;
+  }
+  /* Hide the state chip below 560px — filename needs all the room. */
+  .topbar__brand .topbar__subtitle-state { display: none; }
+
+  /* Pane header: very compact. */
+  .pane__header { padding: 4px 10px; min-height: 40px; }
+  .pane__tab { padding: 5px 8px; font-size: 12px; }
+
+  /* Preview: slightly tighter horizontal padding. */
+  .preview { padding: 20px 18px calc(var(--bottom-bar-h) + var(--statusbar-h) + 48px); }
+  .preview.is-reading { padding: 28px 20px calc(var(--bottom-bar-h) + var(--statusbar-h) + 72px); }
+
+  /* Sidebar width — almost full on small phones. */
+  .sidebar { width: 92vw; }
+
+  /* Tabs tighter. */
+  .tab { min-width: 110px; max-width: 160px; font-size: 12px; }
+
+  /* Bottom bar pill — tighter padding so it doesn't feel oversized. */
+  .topbar .topbar__nav {
+    padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+  .topbar .topbar__nav .segmented {
+    width: min(340px, 100%);
+  }
+  .topbar .topbar__nav .segmented__item {
+    font-size: 0;
+    padding: 0 12px;
+  }
+  .topbar .topbar__nav .segmented__item[data-view="editor"]::after,
+  .topbar .topbar__nav .segmented__item[data-view="preview"]::after {
+    font-size: 13.5px;
+  }
+
+  /* Palette even closer to full-bleed. */
+  .palette { padding-top: 6vh; }
+  .palette__card {
+    width: calc(100vw - 16px);
+    border-radius: 12px;
+  }
+
+  /* Frontmatter table on small phones (≤560px): stack key above value so
+     long descriptions aren't squeezed into a narrow right column. The table
+     remains semantic for copy/paste and screen-reader parity. */
+  .markdown-body table.markdown-frontmatter {
+    display: block;
+    border-radius: 10px;
+  }
+  .markdown-body table.markdown-frontmatter > tbody {
+    display: block;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 2px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr:last-child {
+    border-bottom: 0;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr > th,
+  .markdown-body table.markdown-frontmatter > tbody > tr > td {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr > th {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+  }
+  .markdown-body table.markdown-frontmatter > tbody > tr > td {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .markdown-body table.markdown-frontmatter--nested {
+    margin-top: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elev-1);
+  }
+}
+
+
+/* ==========================================================================
+ * 12. Tiny phone (≤ 380px) — iPhone SE (375px) and smaller
+ * ========================================================================== */
+@media (max-width: 380px) {
+
+  /* Topbar: reclaim every pixel. */
+  .topbar {
+    gap: 2px;
+    padding: 0;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-top: env(safe-area-inset-top);
+  }
+
+  /* All buttons shrink to 36×36 for iPhone SE-class widths. */
+  .topbar__sidebar-toggle,
+  .topbar__actions .btn--icon,
+  .topbar__actions #btn-upload,
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* Tighter divider before the Export pill. */
+  .topbar__actions [data-dropdown="export"] {
+    margin-left: 3px;
+    padding-left: 5px;
+  }
+
+  /* Preview: minimal side padding. */
+  .preview { padding: 18px 14px calc(var(--bottom-bar-h) + var(--statusbar-h) + 40px); }
+
+  /* Editor: match preview. */
+  .editor,
+  .editor__mirror { padding: 16px 16px calc(var(--bottom-bar-h) + var(--statusbar-h) + 32px); }
+
+  /* Bottom bar: smaller pill for narrow screens. */
+  .topbar .topbar__nav .segmented__item {
+    padding: 0 8px;
+    min-height: 42px;
+  }
+
+  /* Filename subtitle — even smaller. */
+  .topbar__brand .topbar__subtitle-name { font-size: 13px; }
+
+  /* Heading scale one notch smaller. */
+  .markdown-body h1 { font-size: 24px; }
+  .markdown-body h2 { font-size: 20px; }
+  .markdown-body h3 { font-size: 17px; }
+}
+
+
+/* ==========================================================================
+ * 13. Landscape phone (short-height) & keyboard-up state
+ *
+ * When the soft keyboard shows, dvh shrinks and the editor surface is
+ * compressed. Give it every vertical pixel.
+ * ========================================================================== */
+@media (max-height: 480px) and (max-width: 900px) {
+
+  :root {
+    --topbar-h: calc(44px + env(safe-area-inset-top));
+    --statusbar-h: calc(26px + env(safe-area-inset-bottom));
+    --bottom-bar-h: 46px;
+  }
+
+  .topbar { min-height: 44px; }
+  .topbar__sidebar-toggle,
+  .topbar__actions .btn--icon,
+  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .pane__header { min-height: 36px; padding: 4px 10px; }
+  .tabs { min-height: 34px; }
+
+  /* Tighten the bottom bar. */
+  .topbar .topbar__nav {
+    padding: 4px 10px calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+  .topbar .topbar__nav .segmented__item {
+    min-height: 40px;
+  }
+
+  /* Drop overlay shrinks. */
+  .drop-overlay__card { padding: 18px 22px; }
+  .drop-overlay__card svg { display: none; }
+}
+
+
+/* ==========================================================================
+ * 14. Touch-device polish — (hover: none) and (pointer: coarse)
+ *
+ * Applies regardless of width (catches iPad landscape at 1024px too).
+ * Suppress hover flickers; emphasise active (tap) feedback.
+ * ========================================================================== */
+@media (hover: none) and (pointer: coarse) {
+
+  /* Neutralize decorative :hover transforms that stick on touch. */
+  .btn:hover,
+  .tab:hover,
+  .sidebar__item:hover,
+  .dropdown__item:hover,
+  .segmented__item:hover,
+  .topbar__logo:hover {
+    transform: none;
+    box-shadow: none;
+  }
+  .btn:hover > svg,
+  .btn:not(.btn--primary):hover {
+    transform: none;
+  }
+  .btn:not(.btn--primary):hover {
+    background: transparent;
+    border-color: transparent;
+  }
+  .btn--primary:hover { filter: none; }
+
+  /* Topbar-specific hover rules are higher-specificity; neutralize them too
+     so touch taps don't leave a lingering hover background. */
+  .topbar__sidebar-toggle:hover,
+  .topbar__actions .btn--icon:hover,
+  .topbar__actions #btn-upload:hover {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-muted);
+  }
+
+  /* Active state = the real touch-feedback channel. 150 ms press timing. */
+  .btn:active,
+  .tab:active,
+  .dropdown__item:active,
+  .sidebar__item:active,
+  .file-item:active,
+  .segmented__item:active,
+  .sidebar__icon-btn:active,
+  .tabs__add:active,
+  .pane__toggle:active,
+  .topbar__sidebar-toggle:active,
+  .topbar__actions .btn:active {
+    transform: scale(0.96);
+    transition: transform 80ms var(--ease-out), background 80ms linear;
+  }
+
+  /* Dropdown items get a tinted highlight instead of transform. */
+  .dropdown__item:active {
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
+    transform: none;
+  }
+
+  /* Ensure every tappable icon has a real hit area. */
+  .btn--icon,
+  .tab__close,
+  .sidebar__icon-btn,
+  .focus-dock__btn,
+  .lightbox__btn,
+  .find-bar__btn,
+  .find-bar__toggle {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* Reveal hover-gated affordances. */
+  .code-copy,
+  .code-lang,
+  .diagram-expand { opacity: 1; }
+
+  /* Remove the save-pulse animation outside the visible topbar on mobile. */
+  .topbar__subtitle::before { animation: none; }
+}
+
+
+/* ==========================================================================
+ * 15. Reduced motion (mobile-specific cleanups)
+ *
+ * Global prefers-reduced-motion is already respected inside styles.css;
+ * here we neutralize the drawer/scrim/bottom-bar animations we added.
+ * ========================================================================== */
+@media (max-width: 900px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-scrim,
+  .panes,
+  .pane,
+  .toast,
+  .topbar .topbar__nav .segmented,
+  .topbar .topbar__nav .segmented__item {
+    transition: none !important;
+    animation: none !important;
+  }
+  /* Instant state toggle on ‘is-active’ rather than a fade. */
+}
+
+
+/* ==========================================================================
+ * 16. Print (belt-and-suspenders — styles.css already handles this)
+ *
+ * Hide every mobile-only fixture. Ensure the bottom bar doesn't overprint
+ * the document text when the user does Cmd+P from a phone browser.
+ * ========================================================================== */
+@media print {
+  .topbar .topbar__nav,
+  .sidebar-scrim,
+  .focus-dock,
+  .toast,
+  .drop-overlay,
+  .palette,
+  .lightbox,
+  .find-bar { display: none !important; }
+}

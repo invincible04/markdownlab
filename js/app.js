@@ -217,11 +217,11 @@ function setupMarked() {
         return `<pre><code${cls}>${highlighted}</code></pre>`;
       },
       blockquote(quote) {
-        const match = quote.match(/^<p>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*?)<\/p>\s*/is);
+        const match = quote.match(/^<p>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br\s*\/?>)?\s*(.*?)<\/p>\s*/is);
         if (match) {
           const kind = match[1].toLowerCase();
           const rest = quote.slice(match[0].length);
-          const trailing = match[2].trim();
+          const trailing = match[2].replace(/^(?:<br\s*\/?>\s*)+/i, '').trim();
           const title = kind.charAt(0).toUpperCase() + kind.slice(1);
           const titleHtml = `<p class="markdown-alert-title">${ALERT_ICONS[kind] || ''} ${title}</p>`;
           const body = trailing ? `<p>${trailing}</p>${rest}` : rest;
@@ -536,6 +536,186 @@ function mermaidThemeVars(theme) {
   };
 }
 
+// Render YAML frontmatter as a GitHub-style two-column table. Without this
+// step, marked treats the leading `---…---` block as a setext H2 per
+// CommonMark, producing a giant bold heading. We parse a safe subset of
+// YAML and emit a table; on any parse failure we strip the block silently.
+
+const FRONTMATTER_KEY_RE = /^([A-Za-z_][\w.-]*)\s*:\s*(.*)$/;
+
+function extractFrontmatter(src) {
+  if (!src.startsWith('---')) return { frontmatterHtml: '', body: src };
+  const firstNl = src.indexOf('\n');
+  if (firstNl === -1) return { frontmatterHtml: '', body: src };
+  if (src.slice(0, firstNl).trim() !== '---') return { frontmatterHtml: '', body: src };
+
+  const rest = src.slice(firstNl + 1);
+  const closeMatch = rest.match(/^(?:---|\.\.\.)\s*$/m);
+  if (!closeMatch) return { frontmatterHtml: '', body: src };
+  const yamlText = rest.slice(0, closeMatch.index).replace(/\s+$/, '');
+  let bodyStart = closeMatch.index + closeMatch[0].length;
+  if (rest[bodyStart] === '\n') bodyStart++;
+  const body = rest.slice(bodyStart);
+
+  let data;
+  try {
+    data = parseSimpleYaml(yamlText);
+  } catch {
+    return { frontmatterHtml: '', body };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) {
+    return { frontmatterHtml: '', body };
+  }
+  return { frontmatterHtml: renderFrontmatterTable(data), body };
+}
+
+// Minimal YAML subset: flat scalars, quoted strings, block sequences,
+// flow sequences/maps, and one level of nested block mappings. Throws on
+// anything unsupported so the caller can fall back.
+function parseSimpleYaml(text) {
+  const lines = text.split('\n');
+  const root = {};
+  const indentOf = (line) => line.match(/^ */)[0].length;
+
+  const scalar = (raw) => {
+    const s = raw.trim();
+    if (s === '' || s === '~' || s.toLowerCase() === 'null') return null;
+    if (/^(true|yes|on)$/i.test(s)) return true;
+    if (/^(false|no|off)$/i.test(s)) return false;
+    if (/^-?\d+$/.test(s)) return Number(s);
+    if (/^-?\d+\.\d+$/.test(s)) return Number(s);
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      return s.slice(1, -1);
+    }
+    if (s.startsWith('[') && s.endsWith(']')) {
+      const inner = s.slice(1, -1).trim();
+      return inner ? inner.split(',').map(scalar) : [];
+    }
+    if (s.startsWith('{') && s.endsWith('}')) {
+      const inner = s.slice(1, -1).trim();
+      const obj = {};
+      if (!inner) return obj;
+      for (const pair of inner.split(',')) {
+        const idx = pair.indexOf(':');
+        if (idx === -1) continue;
+        obj[pair.slice(0, idx).trim()] = scalar(pair.slice(idx + 1));
+      }
+      return obj;
+    }
+    return s;
+  };
+
+  // YAML requires whitespace before `#` for an inline comment.
+  const stripComment = (line) => {
+    let inSingle = false, inDouble = false;
+    for (let k = 0; k < line.length; k++) {
+      const ch = line[k];
+      if (ch === "'" && !inDouble) inSingle = !inSingle;
+      else if (ch === '"' && !inSingle) inDouble = !inDouble;
+      else if (ch === '#' && !inSingle && !inDouble && (k === 0 || /\s/.test(line[k - 1]))) {
+        return line.slice(0, k);
+      }
+    }
+    return line;
+  };
+
+  const isBlank = (l) => !l.trim() || /^\s*#/.test(l);
+
+  let i = 0;
+  while (i < lines.length) {
+    let line = lines[i];
+    if (isBlank(line)) { i++; continue; }
+    line = stripComment(line);
+    if (!line.trim()) { i++; continue; }
+
+    if (indentOf(line) !== 0) throw new Error('Unexpected indentation at top level');
+    const m = line.match(FRONTMATTER_KEY_RE);
+    if (!m) throw new Error(`Unparseable line: ${line}`);
+    const key = m[1];
+    const inline = m[2];
+
+    if (inline !== '') {
+      root[key] = scalar(inline);
+      i++;
+      continue;
+    }
+
+    let j = i + 1;
+    while (j < lines.length && isBlank(lines[j])) j++;
+    if (j >= lines.length || indentOf(lines[j]) === 0) {
+      root[key] = null;
+      i = j;
+      continue;
+    }
+
+    const childIndent = indentOf(lines[j]);
+    if (/^\s+-(\s|$)/.test(lines[j])) {
+      const items = [];
+      while (j < lines.length) {
+        const l = lines[j];
+        if (isBlank(l)) { j++; continue; }
+        if (indentOf(l) < childIndent) break;
+        const sm = l.match(/^\s+-\s*(.*)$/);
+        if (!sm) break;
+        items.push(scalar(sm[1]));
+        j++;
+      }
+      root[key] = items;
+    } else {
+      const sub = {};
+      while (j < lines.length) {
+        const l = lines[j];
+        if (isBlank(l)) { j++; continue; }
+        if (indentOf(l) < childIndent) break;
+        const sm = stripComment(l).match(/^\s+([A-Za-z_][\w.-]*)\s*:\s*(.*)$/);
+        if (!sm) throw new Error(`Unparseable nested line: ${l}`);
+        sub[sm[1]] = scalar(sm[2]);
+        j++;
+      }
+      root[key] = sub;
+    }
+    i = j;
+  }
+
+  return root;
+}
+
+function renderFrontmatterTable(data) {
+  const rows = Object.entries(data).map(([k, v]) =>
+    `<tr><th scope="row">${softBreakKey(k)}</th><td>${renderFrontmatterValue(v)}</td></tr>`
+  ).join('');
+  return `<table class="markdown-frontmatter"><tbody>${rows}</tbody></table>`;
+}
+
+function renderFrontmatterValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) {
+    if (!value.length) return '';
+    return `<span class="frontmatter-chips">${
+      value.map((v) => `<span class="frontmatter-chip">${escapeHtml(formatFrontmatterScalar(v))}</span>`).join('')
+    }</span>`;
+  }
+  if (typeof value === 'object') {
+    const rows = Object.entries(value).map(([k, v]) =>
+      `<tr><th scope="row">${softBreakKey(k)}</th><td>${renderFrontmatterValue(v)}</td></tr>`
+    ).join('');
+    return `<table class="markdown-frontmatter markdown-frontmatter--nested"><tbody>${rows}</tbody></table>`;
+  }
+  return escapeHtml(formatFrontmatterScalar(value));
+}
+
+// Insert U+200B (zero-width space) after _ and - so long identifier keys like
+// `estimated_reading_time` wrap at natural boundaries instead of mid-word.
+function softBreakKey(key) {
+  return escapeHtml(String(key)).replace(/([_-])/g, '$1\u200B');
+}
+
+function formatFrontmatterScalar(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return String(v);
+}
+
 // Extract $…$ and $$…$$ math (outside fenced/inline code), render with KaTeX,
 // leave placeholders that are re-injected after marked runs.
 const MATH_PLACEHOLDER = (i) => `@@MATH_PLACEHOLDER_${i}@@`;
@@ -697,9 +877,11 @@ async function render() {
   setStatus('busy', 'Rendering…');
 
   try {
-    const { processed, renders } = extractMath(src);
+    const { frontmatterHtml, body } = extractFrontmatter(src);
+    const { processed, renders } = extractMath(body);
     let html = marked.parse(processed);
     html = reinjectMath(html, renders);
+    if (frontmatterHtml) html = frontmatterHtml + html;
 
     const clean = DOMPurify.sanitize(html, {
       ADD_TAGS: ['foreignObject', 'annotation-xml', 'semantics', 'annotation', 'math', 'mi', 'mo', 'mn', 'mrow', 'msup', 'msub', 'msubsup', 'mfrac', 'mspace', 'mtext', 'menclose', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
@@ -1023,8 +1205,11 @@ function postProcess() {
 
   // Wrap each top-level table in a scroll container so wide tables scroll
   // horizontally without breaking the natural 100% width of narrow tables.
+  // Skip the frontmatter table — it has its own border/radius and the
+  // overflow wrapper traps its margin-bottom, producing a visible gap.
   preview.querySelectorAll('table').forEach((t) => {
     if (t.parentElement?.classList.contains('table-wrap')) return;
+    if (t.classList.contains('markdown-frontmatter')) return;
     const wrap = document.createElement('div');
     wrap.className = 'table-wrap';
     t.parentNode.insertBefore(wrap, t);
@@ -1374,6 +1559,11 @@ tocNav?.addEventListener('click', (e) => {
     history.replaceState(history.state, '', newUrl);
   } catch {}
   scrollPreviewToHeading(heading, { pinTocLink: link });
+  // On tablet/mobile the drawer covers the preview — close it after a tap so
+  // users can actually see the heading they navigated to.
+  if (isTocDrawerMode()) {
+    applyTocToggle(false, { silent: true });
+  }
 });
 
 ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach((ev) => {
@@ -1423,14 +1613,89 @@ function applyTocToggle(visible, { silent = false } = {}) {
     if (label) label.textContent = on ? 'Outline' : 'Outline off';
   }
   try { localStorage.setItem(TOC_KEY, on ? '1' : '0'); } catch {}
+  // Drawer-mode side-effects (scrim, body lock, scroll-into-active). These
+  // are no-ops above the 1100px breakpoint — driven entirely by media query.
+  updateTocDrawerState(on);
   if (on) scheduleTocActiveUpdate();
   if (!silent) showToast(on ? 'Outline on' : 'Outline off', 'info');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TOC drawer (≤1100px): slide-in right-side panel with scrim + ESC-to-close.
+// Above 1100px the TOC is an in-flow column and none of this runs visibly.
+// ─────────────────────────────────────────────────────────────────────────────
+const TOC_DRAWER_MQ = window.matchMedia('(max-width: 1100px)');
+
+function isTocDrawerMode() {
+  return TOC_DRAWER_MQ.matches;
+}
+
+function ensureTocScrim() {
+  let scrim = document.getElementById('toc-scrim');
+  if (!scrim) {
+    scrim = document.createElement('div');
+    scrim.id = 'toc-scrim';
+    scrim.className = 'toc-scrim';
+    scrim.addEventListener('click', () => applyTocToggle(false));
+    // Prevent rubber-band scrolling of the body through the scrim on iOS.
+    scrim.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    document.body.appendChild(scrim);
+  }
+  return scrim;
+}
+
+function updateTocDrawerState(open) {
+  if (!toc) return;
+  const drawerMode = isTocDrawerMode();
+  const scrim = document.getElementById('toc-scrim');
+  if (!drawerMode) {
+    // Tear down any drawer chrome when resizing back to desktop.
+    scrim?.classList.remove('is-open');
+    document.body.classList.remove('is-toc-drawer-open');
+    return;
+  }
+  if (open && toc.dataset.empty !== 'true') {
+    ensureTocScrim().classList.add('is-open');
+    document.body.classList.add('is-toc-drawer-open');
+  } else {
+    scrim?.classList.remove('is-open');
+    document.body.classList.remove('is-toc-drawer-open');
+  }
+}
+
+// Close the drawer when the viewport crosses back above 1100px, and clean up
+// DOM state. Fires on every MQ change (both directions).
+TOC_DRAWER_MQ.addEventListener?.('change', () => {
+  if (!isTocDrawerMode()) {
+    document.getElementById('toc-scrim')?.classList.remove('is-open');
+    document.body.classList.remove('is-toc-drawer-open');
+  } else {
+    // Entering drawer mode: if the saved pref was "on", force it closed so
+    // users aren't surprised by a drawer covering their content on rotate.
+    if (toc && toc.dataset.collapsed === 'false') {
+      applyTocToggle(false, { silent: true });
+    }
+  }
+});
+
+// ESC closes the drawer (only when it's actually the active UI affordance).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!isTocDrawerMode()) return;
+  if (!toc || toc.dataset.collapsed === 'true') return;
+  // Don't steal ESC from the palette, lightbox, or find-bar.
+  const blocker = document.querySelector('.palette.is-open, .lightbox.is-open, .find-bar');
+  if (blocker) return;
+  applyTocToggle(false);
+});
+
 function restoreTocPref() {
   if (!toc) return;
   const raw = localStorage.getItem(TOC_KEY);
-  applyTocToggle(raw === null ? true : raw === '1', { silent: true });
+  // On drawer-mode breakpoints we always boot closed so the drawer doesn't
+  // cover the preview on page load. Saved pref still wins at ≥1101px.
+  const desired = raw === null ? true : raw === '1';
+  applyTocToggle(isTocDrawerMode() ? false : desired, { silent: true });
 }
 
 btnToc?.addEventListener('click', () => {
@@ -2641,7 +2906,18 @@ function updateFileIndicator(state = 'saved') {
   const label = state === 'error'   ? 'autosave unavailable'
               : Store.dirty.has(f.id) ? 'editing\u2026'
               : 'autosaved';
-  fileIndicator.textContent = `${f.name} \u00b7 ${label}`;
+  // Split into name + state spans so the mobile layout can restyle or hide
+  // the state chip without losing the filename. On desktop both render inline
+  // with a " · " separator via the ::before pseudo on the state span.
+  fileIndicator.innerHTML = '';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'topbar__subtitle-name';
+  nameEl.textContent = f.name;
+  const stateEl = document.createElement('span');
+  stateEl.className = 'topbar__subtitle-state';
+  stateEl.dataset.state = Store.dirty.has(f.id) ? 'dirty' : (state === 'error' ? 'error' : 'saved');
+  stateEl.textContent = label;
+  fileIndicator.append(nameEl, stateEl);
 }
 
 // ---- Projects bootstrap ------------------------------------------------

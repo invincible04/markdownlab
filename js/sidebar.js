@@ -64,6 +64,7 @@ export async function initSidebar(callbacks = {}) {
   bindResize();
   bindDragReset();
   bindResponsiveScrim();
+  bindDrawerSwipe();
 
   Store.on((kind) => {
     if (['tab:activated', 'tab:closed', 'tabs:reordered'].includes(kind)) {
@@ -384,6 +385,113 @@ function ensureScrim() {
   }
   // Body-scroll lock pairs with the `body.is-drawer-open` rule in CSS.
   document.body.classList.toggle('is-drawer-open', drawerOpen);
+}
+
+// Left-swipe on the drawer to close it. Claims the gesture only when
+// horizontal motion dominates vertical, so the file list can still scroll
+// normally. Closes on distance (≥35% of drawer width) or flick velocity.
+function bindDrawerSwipe() {
+  const INTENT_THRESHOLD = 10;
+  const CLOSE_DISTANCE_RATIO = 0.35;
+  const CLOSE_VELOCITY = -0.4;       // px/ms
+  const ANIM_MS = 280;
+
+  let startX = 0, startY = 0, startTime = 0;
+  let width = 0;
+  let state = 'idle';  // 'idle' | 'undecided' | 'swiping' | 'locked-vertical'
+
+  const isDrawerOpen = () =>
+    els.shell.dataset.sidebar === 'open' &&
+    !window.matchMedia(WIDE_QUERY).matches;
+
+  const scrimEl = () => document.getElementById('sidebar-scrim');
+
+  const setDragging = (on) => {
+    els.sidebar.classList.toggle('is-swiping', on);
+    scrimEl()?.classList.toggle('is-swiping', on);
+  };
+
+  const clearInlineStyles = () => {
+    els.sidebar.style.transform = '';
+    const s = scrimEl();
+    if (s) s.style.opacity = '';
+  };
+
+  els.sidebar.addEventListener('touchstart', (e) => {
+    if (!isDrawerOpen()) return;
+    // Skip text-entry controls so caret/selection gestures work normally.
+    if (e.target?.closest('input, textarea, [contenteditable="true"]')) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    startTime = performance.now();
+    width = els.sidebar.offsetWidth;
+    state = 'undecided';
+  }, { passive: true });
+
+  els.sidebar.addEventListener('touchmove', (e) => {
+    if (state === 'idle' || state === 'locked-vertical') return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+
+    if (state === 'undecided') {
+      if (Math.abs(dx) < INTENT_THRESHOLD && Math.abs(dy) < INTENT_THRESHOLD) return;
+      if (Math.abs(dy) > Math.abs(dx) || dx >= 0) {
+        state = 'locked-vertical';
+        return;
+      }
+      state = 'swiping';
+      setDragging(true);
+    }
+
+    const offset = Math.max(-width, Math.min(0, dx));
+    els.sidebar.style.transform = `translateX(${offset}px)`;
+    const s = scrimEl();
+    if (s) s.style.opacity = String(1 + offset / width);
+    // preventDefault can fail with cancelable=false once the browser commits
+    // to native scrolling; guard to avoid console intervention warnings.
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  const end = (e) => {
+    if (state !== 'swiping') {
+      state = 'idle';
+      return;
+    }
+    const t = e.changedTouches?.[0] || null;
+    const dx = t ? t.clientX - startX : 0;
+    const elapsed = performance.now() - startTime || 1;
+    const velocity = dx / elapsed;
+    const shouldClose =
+      dx < -width * CLOSE_DISTANCE_RATIO ||
+      velocity < CLOSE_VELOCITY;
+
+    setDragging(false);
+    state = 'idle';
+
+    // Animate the final segment via inline transform (CSS transition is back
+    // on now that .is-swiping is gone), then commit state & clear inline.
+    if (shouldClose) {
+      els.sidebar.style.transform = `translateX(${-width}px)`;
+      const s = scrimEl();
+      if (s) s.style.opacity = '0';
+      // Flip data-sidebar BEFORE clearing inline, so the CSS closed-state
+      // transform matches what's on screen (no one-frame snap to 0).
+      setTimeout(() => {
+        toggleSidebar(false);
+        clearInlineStyles();
+      }, ANIM_MS);
+    } else {
+      els.sidebar.style.transform = 'translateX(0)';
+      const s = scrimEl();
+      if (s) s.style.opacity = '1';
+      setTimeout(clearInlineStyles, ANIM_MS);
+    }
+  };
+
+  els.sidebar.addEventListener('touchend', end, { passive: true });
+  els.sidebar.addEventListener('touchcancel', end, { passive: true });
 }
 
 function bindResize() {

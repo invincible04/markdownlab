@@ -213,6 +213,25 @@ body > .statusbar { grid-row: 3; }
   animation: save-pulse 2.4s ease-out infinite;
   flex-shrink: 0;
 }
+.topbar__subtitle-name {
+  color: var(--text);
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar__subtitle-state {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.topbar__subtitle-state::before {
+  content: '\00b7';
+  margin-right: 6px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.topbar__subtitle-state[data-state="dirty"] { color: var(--accent); }
+.topbar__subtitle-state[data-state="error"] { color: var(--danger, #ef4444); }
 @keyframes save-pulse {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent); }
   60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 0%, transparent); }
@@ -271,6 +290,7 @@ body > .statusbar { grid-row: 3; }
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 12px;
   font-size: 12.5px; font-weight: 500;
+  white-space: nowrap;
   color: var(--text);
   background: var(--bg-elev-3);
   border: 1px solid var(--border);
@@ -971,16 +991,122 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .toc__nav::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
 .panes[data-view='editor'] .toc { display: none; }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * TOC as a slide-in drawer (≤1100px): tablet + mobile.
+ *
+ * Below 1100px the split-view TOC column would squeeze the preview; instead
+ * we promote it to a fixed right-side drawer that slides in when the user
+ * taps the "Outline" button. The button in the preview header now meaningfully
+ * toggles visibility at every size.
+ *
+ *   · Open state  → toc[data-collapsed='false'] translates into view
+ *   · Closed state → translated off-screen to the right
+ *   · Scrim       → .toc-scrim (injected by app.js), click-to-close
+ *   · ESC to close, click-on-link to close (handled in app.js)
+ * ────────────────────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
-  .panes[data-view='split'] .toc { display: none; }
+  /* Detach from the flex row so the preview reclaims the full width. */
+  .preview__layout { position: relative; }
+
+  /* Override the editor-view hide rule — in drawer mode the TOC is a
+     fixed-position overlay, not part of the pane layout, so it should be
+     available regardless of which pane is foregrounded. */
+  .panes[data-view='editor'] .toc { display: flex; }
+
+  .toc {
+    position: fixed;
+    top: var(--topbar-h);
+    bottom: var(--statusbar-h);
+    right: 0;
+    width: min(320px, 88vw);
+    flex: none;
+    z-index: 60;
+    border-left: 1px solid var(--border);
+    box-shadow: -24px 0 60px -20px rgba(0, 0, 0, 0.45);
+    transform: translateX(100%);
+    transition:
+      transform 260ms cubic-bezier(0.32, 0.72, 0, 1),
+      opacity 200ms var(--ease-out);
+    opacity: 1;                     /* keep visible; we translate instead */
+    will-change: transform;
+  }
+  :root[data-theme='light'] .toc {
+    box-shadow: -24px 0 60px -20px rgba(15, 23, 42, 0.18);
+  }
+
+  /* OPEN state: any view-mode, any data-empty. The outline button controls
+     collapsed; if the TOC has no headings we still hide for cleanliness. */
+  .toc[data-collapsed='false'] {
+    transform: translateX(0);
+  }
+  .toc[data-collapsed='true'],
+  .toc[data-empty='true'] {
+    transform: translateX(100%);
+    pointer-events: none;
+  }
+  /* Even when collapsed, keep it mounted so the open transition plays. */
+  .workspace .toc[data-collapsed='true'] {
+    flex-basis: unset;
+    opacity: 1;
+    overflow: hidden;
+  }
+
+  /* Scrim (injected by app.js as .toc-scrim). Mirrors the sidebar drawer. */
+  .toc-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(3px) saturate(110%);
+    -webkit-backdrop-filter: blur(3px) saturate(110%);
+    z-index: 55;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms var(--ease-out);
+    will-change: opacity;
+  }
+  .toc-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* When the drawer is open on touch devices, lock body scroll so users
+     are clearly interacting with the outline rather than rubber-banding
+     the preview underneath. */
+  body.is-toc-drawer-open {
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  /* Close button is the primary dismissal on touch — make it a bit larger. */
+  .toc__close {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* Header is a bit taller for touch ergonomics. */
+  .toc__header {
+    padding: 14px 14px 12px 18px;
+    min-height: 48px;
+  }
+
+  /* Touch-friendly link rows. */
+  .toc__link {
+    padding-top: 9px;
+    padding-bottom: 9px;
+    font-size: 13.5px;
+  }
 }
-@media (max-width: 720px) {
-  .toc { display: none; }
-  .preview__layout { flex-direction: column; }
+
+/* Small phones: take the full right edge with a modest left gap. */
+@media (max-width: 560px) {
+  .toc {
+    width: min(340px, 92vw);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toc, .toc__link, .toc__nav { transition: none; scroll-behavior: auto; }
+  .toc, .toc__link, .toc__nav, .toc-scrim { transition: none; scroll-behavior: auto; }
 }
 .preview.is-reading {
   font-family: var(--font-read);
@@ -1402,6 +1528,91 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   transition: background var(--t-fast) var(--ease-out);
 }
 .markdown-body tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev-3)); }
+
+/* YAML frontmatter: two-column key/value table matching GitHub's blob
+   viewer. Scalars render as text, arrays as pill chips, nested maps as
+   sub-tables. Hover highlight is suppressed — it's metadata, not content. */
+.markdown-body table.markdown-frontmatter {
+  width: 100%;
+  margin: 0 0 24px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  table-layout: auto;
+  box-shadow: var(--shadow-sm);
+}
+.markdown-body table.markdown-frontmatter > tbody > tr > th {
+  width: 30%;
+  min-width: 130px;
+  max-width: 240px;
+  padding: 10px 16px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: linear-gradient(180deg, var(--bg-elev-3), color-mix(in srgb, var(--bg-elev-3) 80%, transparent));
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  /* Keys carry U+200B after _/- (softBreakKey); break-word is a last-resort fallback. */
+  overflow-wrap: break-word;
+}
+.markdown-body table.markdown-frontmatter > tbody > tr > td {
+  padding: 10px 16px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.markdown-body table.markdown-frontmatter > tbody > tr:last-child > th,
+.markdown-body table.markdown-frontmatter > tbody > tr:last-child > td {
+  border-bottom: 0;
+}
+.markdown-body table.markdown-frontmatter > tbody > tr:hover {
+  background: transparent;
+}
+
+.markdown-body table.markdown-frontmatter--nested {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-1);
+  font-size: 13px;
+  box-shadow: none;
+}
+.markdown-body table.markdown-frontmatter--nested > tbody > tr > th {
+  width: 35%;
+  background: var(--bg-elev-3);
+  font-size: 12px;
+}
+
+.markdown-body .frontmatter-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.markdown-body .frontmatter-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+.markdown-body .frontmatter-chip:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
 
 .markdown-body img {
   max-width: 100%; height: auto;
@@ -1885,6 +2096,15 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 ::-webkit-scrollbar-corner { background: transparent; }
 * { scrollbar-color: color-mix(in srgb, var(--border-strong) 75%, transparent) transparent; scrollbar-width: thin; }
+
+@media (min-width: 961px) and (max-width: 1100px) {
+  .topbar { gap: 8px; padding: 0 12px; }
+  .topbar__actions { gap: 6px; }
+  .topbar__actions .btn { padding: 7px 10px; }
+  #btn-palette { padding: 7px 9px; }
+  #btn-palette span { display: none; }
+  .segmented__item { padding: 6px 10px; }
+}
 
 @media (max-width: 960px) {
   .topbar { grid-template-columns: auto 1fr auto; padding: 0 10px; }
@@ -2555,9 +2775,12 @@ body:has(.palette.is-open) .focus-dock { display: none; }
    Responsive: sidebar collapses to overlay drawer below 900px
    ======================================================================== */
 
+@media (max-width: 1100px) {
+  .btn__kbd { display: none; }
+}
+
 @media (max-width: 960px) {
   .shell { --sidebar-width: 260px; }
-  .btn__kbd { display: none; }
 }
 
 @media (max-width: 880px) {

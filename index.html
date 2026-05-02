@@ -2,8 +2,18 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- viewport-fit=cover => lets us paint behind the iOS notch/Dynamic Island
+       and use env(safe-area-inset-*) for padding. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
+  <!-- Mobile browser chrome matches app surface (iOS Safari / Chrome address bar). -->
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)" />
+  <!-- Standalone PWA / Add to Home Screen niceties -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="format-detection" content="telephone=no" />
   <title>MarkdownLab — Live Markdown, Mermaid & LaTeX Renderer</title>
   <meta name="description" content="MarkdownLab — a beautiful static markdown playground. Paste or drop a .md file and get instant rendering for GFM, syntax-highlighted code, Mermaid diagrams, and KaTeX math." />
 
@@ -11,6 +21,9 @@
 
   <!-- App styles -->
   <link rel="stylesheet" href="css/styles.css?v=3" />
+  <!-- Mobile-specific overrides (loaded last so it wins the cascade on small screens).
+       Desktop rules in styles.css are untouched; this file only defines @media blocks. -->
+  <link rel="stylesheet" href="css/mobile.css?v=4" />
 
   <!-- Typography: Inter for UI/body, JetBrains Mono for code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />

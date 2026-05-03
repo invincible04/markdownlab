@@ -75,7 +75,7 @@
 
   <!-- Inline SVG for modern browsers; PNGs for iOS (no SVG there).
        '#' must be %23-encoded — literal '#' would truncate the data URI. -->
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23059669'/><stop offset='1' stop-color='%230891b2'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z' fill='white'/><path d='M44 28h5v10h4l-6 8-6-8h4V28z' fill='white'/></svg>" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23059669'/%3E%3Cstop offset='1' stop-color='%230891b2'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z' fill='white'/%3E%3Cpath d='M44 28h5v10h4l-6 8-6-8h4V28z' fill='white'/%3E%3C/svg%3E" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
 
@@ -272,12 +272,12 @@
         <div class="dropdown__menu" role="menu">
           <button class="dropdown__item" data-action="import-folder" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><polyline points="9 14 12 11 15 14"/></svg>
-            <div><strong>Import folder</strong><small>Import a directory of .md files as a project</small></div>
+            <span class="dropdown__item-text"><strong>Import folder</strong><small>Import a directory of .md files as a project</small></span>
           </button>
         </div>
       </div>
       <input type="file" id="file-input" class="sr-file" accept=".md,.markdown,.txt,text/markdown,text/plain" tabindex="-1" aria-hidden="true" multiple />
-      <input type="file" id="folder-input" class="sr-file" tabindex="-1" aria-hidden="true" webkitdirectory directory multiple />
+      <input type="file" id="folder-input" class="sr-file" tabindex="-1" aria-hidden="true" multiple />
 
       <div class="dropdown" data-dropdown="examples">
         <button class="btn btn--ghost dropdown__trigger" aria-haspopup="true" aria-expanded="false">
@@ -307,28 +307,28 @@
         <div class="dropdown__menu" role="menu">
           <button class="dropdown__item" data-action="export-html" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <div><strong>Download HTML</strong><small>Self-contained, offline</small></div>
+            <span class="dropdown__item-text"><strong>Download HTML</strong><small>Self-contained, offline</small></span>
           </button>
           <button class="dropdown__item" data-action="export-md" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="15" y2="11"/></svg>
-            <div><strong>Download Markdown</strong><small>Source .md file</small></div>
+            <span class="dropdown__item-text"><strong>Download Markdown</strong><small>Source .md file</small></span>
           </button>
           <button class="dropdown__item" data-action="export-pdf" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h6M9 11h6"/></svg>
-            <div><strong>Download PDF</strong><small>Light theme, direct download</small></div>
+            <span class="dropdown__item-text"><strong>Download PDF</strong><small>Light theme, direct download</small></span>
           </button>
           <div class="dropdown__divider"></div>
           <button class="dropdown__item" data-action="copy-html" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <div><strong>Copy rendered HTML</strong><small>To clipboard</small></div>
+            <span class="dropdown__item-text"><strong>Copy rendered HTML</strong><small>To clipboard</small></span>
           </button>
           <button class="dropdown__item" data-action="copy-md" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <div><strong>Copy markdown source</strong><small>To clipboard</small></div>
+            <span class="dropdown__item-text"><strong>Copy markdown source</strong><small>To clipboard</small></span>
           </button>
           <button class="dropdown__item" data-action="clear" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            <div><strong>Clear document</strong><small>Start fresh</small></div>
+            <span class="dropdown__item-text"><strong>Clear document</strong><small>Start fresh</small></span>
           </button>
         </div>
       </div>
@@ -413,7 +413,6 @@
                 spellcheck="false"
                 autocomplete="off"
                 autocapitalize="off"
-                autocorrect="off"
                 wrap="soft"
                 aria-label="Markdown source editor"
                 placeholder="# Start typing…&#10;&#10;Paste any markdown here, drag-and-drop a .md file, or load an example from the top bar."

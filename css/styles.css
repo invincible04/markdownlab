@@ -966,7 +966,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
 }
 .dropdown__item > svg { color: var(--text-muted); flex-shrink: 0; transition: color var(--t-fast) var(--ease-out); }
-.dropdown__item > div { display: flex; flex-direction: column; min-width: 0; }
+.dropdown__item > .dropdown__item-text { display: flex; flex-direction: column; min-width: 0; }
 .dropdown__item small { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
 .dropdown__item:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-3)); }
 .dropdown__item:hover > svg { color: var(--accent); }

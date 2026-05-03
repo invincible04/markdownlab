@@ -22,6 +22,7 @@ import { escapeHtml, cssEscape } from './utils.js';
 
 // ---------- DOM refs ----------
 const editor         = document.getElementById('editor');
+if (editor) editor.setAttribute('autocorrect', 'off');
 const editorMirror   = document.getElementById('editor-mirror');
 const preview        = document.getElementById('preview');
 const previewWrap    = document.getElementById('preview-wrap');
@@ -30,6 +31,10 @@ const workspace      = document.querySelector('.workspace');
 const dropOverlay    = document.getElementById('drop-overlay');
 const fileInput      = document.getElementById('file-input');
 const folderInput    = document.getElementById('folder-input');
+if (folderInput) {
+  folderInput.setAttribute('webkitdirectory', '');
+  folderInput.setAttribute('directory', '');
+}
 const btnUpload      = document.getElementById('btn-upload');
 const btnTheme       = document.getElementById('btn-theme');
 const btnFocus       = document.getElementById('btn-focus');

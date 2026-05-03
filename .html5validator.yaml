@@ -1,0 +1,13 @@
+# html5validator config.
+# See https://github.com/svenkreiss/html5validator.
+#
+# The PyPI-shipped vnu.jar (bundled with html5validator 0.4.2, June 2020)
+# predates the WHATWG spec change that added the `media` attribute to
+# `<meta name="theme-color">` for per-color-scheme theming. Newer vnu.jar
+# versions (including the one in the CI Docker image) accept it, so CI
+# does not flag this — but local runs via `pip install html5validator` do.
+# Silencing the outdated warning is safe: the HTML is spec-compliant and
+# browsers (Chrome, Safari, Firefox) ship the feature.
+
+ignore:
+  - 'Attribute "media" not allowed on element "meta" at this point.'

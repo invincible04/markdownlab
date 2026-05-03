@@ -231,11 +231,16 @@ If you're publishing a fork under your own domain, update these in one pass:
 - **Canonical URL** — find-and-replace `markdownlab.vercel.app` across `index.html`, `robots.txt`, `sitemap.xml`, `llms.txt`, and `design/og-image.svg`
 - **Repo link** — find-and-replace `github.com/invincible04/markdownlab` in `index.html` (`sameAs`, footer, About modal) and `llms.txt`
 - **OG image** — regenerate `og-image.png` from the edited `design/og-image.svg`. The steps are in [`design/README.md`](design/README.md)
-- **Host headers** — `vercel.json` is Vercel-specific. For Netlify or Cloudflare Pages, translate the `headers[]` list into `_headers`. For nginx or Apache, copy the directives into your server block.
-- **CSP hash** — if you edit the inline async-CSS script in `<head>`, recompute its SHA-256 and update `script-src` in `vercel.json`:
+- **Host headers** — `vercel.json` is Vercel-specific. For Netlify or Cloudflare Pages, drop-in replacements are already committed as [`_headers`](_headers) and [`netlify.toml`](netlify.toml). For nginx or Apache, copy the directives into your server block.
+- **CSP hash** — if you edit the inline async-CSS script in `<head>`, recompute its SHA-256 and update `script-src` in `vercel.json`, `_headers`, and `netlify.toml`:
 
   ```sh
-  python3 -c "import hashlib,base64; s=open('script-body.txt').read(); print('sha256-'+base64.b64encode(hashlib.sha256(s.encode()).digest()).decode())"
+  python3 -c "
+  import base64, hashlib, re
+  html = open('index.html').read()
+  body = re.search(r'<script(?![^>]*\ssrc\s*=)[^>]*>([\s\S]*?)</script>', html).group(1)
+  print('sha256-' + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode())
+  "
   ```
 
 ## FAQ
@@ -300,7 +305,9 @@ PDF export uses the browser's native `window.print()` API against a hidden, ligh
 
 ## Contributing
 
-Bugs, feature ideas, and PRs are welcome — [open an issue](https://github.com/invincible04/markdownlab/issues) or submit a PR. There's no build step: clone, edit, open `index.html`, reload. The code is vanilla HTML/CSS/JS (ES modules), with comments explaining the non-obvious bits.
+PRs are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first — it covers the zero-build invariant, the CSP-hash footgun, the code style, and the PR checklist. For anything non-trivial, open an issue before writing code.
+
+Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues should be reported privately per the [Security Policy](SECURITY.md), never in public issues.
 
 ## License
 

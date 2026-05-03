@@ -1,0 +1,74 @@
+name: Feature request
+description: Suggest an idea, improvement, or new capability for MarkdownLab.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! A few things before you start typing:
+
+        - **Non-trivial changes should be discussed here before you write code.** See [CONTRIBUTING.md](https://github.com/invincible04/markdownlab/blob/main/CONTRIBUTING.md).
+        - **MarkdownLab is deliberately zero-build and client-side only.** Features that require a server, a bundler, or a new runtime dependency face a high bar.
+        - **Please check [closed issues](https://github.com/invincible04/markdownlab/issues?q=is%3Aissue+is%3Aclosed)** — an idea may have been declined with reasoning you can build on.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the user need. Not the solution yet — the underlying problem.
+      placeholder: "When I'm writing long articles, I can't easily jump between sections because there's no table of contents..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should MarkdownLab address this? UI sketches, keyboard shortcuts, and edge cases welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other approaches that would solve the problem, and why you prefer the one above.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this feature belong?
+      options:
+        - Editor (CodeMirror area, shortcuts, commands)
+        - Preview (rendering, Mermaid, KaTeX, syntax highlighting)
+        - Export (HTML, PDF, SVG)
+        - Sidebar / projects / tabs / files
+        - Command palette
+        - Accessibility
+        - PWA / offline / installability
+        - Theme / visual design
+        - Documentation / examples
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Design constraints
+      description: Confirm you've checked these.
+      options:
+        - label: This feature does **not** require a build step, bundler, or lockfile.
+          required: true
+        - label: This feature does **not** require a server, backend, or user account.
+          required: true
+        - label: This feature does **not** send any telemetry, analytics, or tracking data.
+          required: true
+        - label: I am aware that new runtime CDN dependencies will need a strong justification.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Mockups, links to similar features elsewhere, related issues.

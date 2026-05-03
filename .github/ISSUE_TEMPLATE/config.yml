@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/invincible04/markdownlab/security/advisories/new
+    about: Report privately using GitHub's security advisory system. Do not file a public issue.
+  - name: Question or discussion
+    url: https://github.com/invincible04/markdownlab/discussions
+    about: For usage questions, ideas that are not yet concrete, or general conversation.
+  - name: Live demo
+    url: https://markdownlab.vercel.app/
+    about: Try MarkdownLab in your browser before filing an issue.

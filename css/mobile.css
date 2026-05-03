@@ -71,8 +71,12 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* Accent-tab nav appearance for form fields on iOS. */
-  input, textarea, select { -webkit-appearance: none; appearance: none; }
+  /* Accent-tab nav appearance for form fields on iOS. Exclude checkboxes
+     and radios — resetting `appearance` on those erases the native widget
+     entirely, which breaks GFM task-list rendering in the preview. */
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select { -webkit-appearance: none; appearance: none; }
 
   /* Keep the body grid stable — even though the topbar/statusbar heights
      change on mobile, the CSS variables below update them in place so

@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  html:
+    name: HTML5 validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate index.html
+        uses: Cyb3r-Jak3/html5validator-action@v7.2.0
+        with:
+          root: .
+          blacklist: .git,.github,node_modules,design
+
+  links:
+    name: Internal link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lychee (offline, internal refs only)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --verbose --no-progress './**/*.md' './**/*.html' './.github/**/*.md'
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  csp:
+    name: CSP inline-script hash drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recompute SHA-256 and verify pinned hash across hosting configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import base64, hashlib, pathlib, re, sys
+
+          # CSP script-src only governs scripts the browser executes.
+          # <script type="application/ld+json">, "application/json", "text/template"
+          # and other non-JS MIME types are data blocks, not scripts, so we skip them.
+          NON_EXECUTABLE_TYPES = re.compile(
+              r'\btype\s*=\s*["\'](?:'
+              r'application/ld\+json|'
+              r'application/json|'
+              r'text/template|'
+              r'text/plain'
+              r')["\']',
+              re.IGNORECASE,
+          )
+
+          html = pathlib.Path('index.html').read_text()
+          # Match <script> blocks with no src= attribute (i.e. inline).
+          # Use \s before src= so data-src= and other suffix attributes
+          # are not treated as the src attribute.
+          tag_re = re.compile(
+              r'<script(?![^>]*\ssrc\s*=)([^>]*)>([\s\S]*?)</script>',
+              re.IGNORECASE,
+          )
+
+          inline_executable = []
+          for attrs, body in tag_re.findall(html):
+              if NON_EXECUTABLE_TYPES.search(attrs):
+                  continue
+              inline_executable.append(body)
+
+          if not inline_executable:
+              print('No executable inline <script> found. CSP hash check not applicable.')
+              sys.exit(0)
+          if len(inline_executable) > 1:
+              print(f'::warning::Found {len(inline_executable)} executable inline <script> blocks; hashing all.')
+
+          computed = {
+              'sha256-' + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+              for body in inline_executable
+          }
+          print('Computed hashes:')
+          for h in sorted(computed):
+              print(f'  {h}')
+
+          targets = [p for p in ('vercel.json', '_headers', 'netlify.toml') if pathlib.Path(p).exists()]
+          if not targets:
+              print('::error::No hosting config files found. Expected at least one of vercel.json, _headers, netlify.toml.')
+              sys.exit(1)
+
+          failed = False
+          for name in targets:
+              contents = pathlib.Path(name).read_text()
+              missing = [h for h in computed if h not in contents]
+              if missing:
+                  for h in missing:
+                      print(f'::error file={name}::CSP hash {h} missing from {name}. Recompute and pin.')
+                  failed = True
+              else:
+                  print(f'OK: all {len(computed)} hash(es) present in {name}')
+
+          sys.exit(1 if failed else 0)
+          PY
+
+  headers-parity:
+    name: Hosting-config parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify _headers and netlify.toml mirror vercel.json security headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json, pathlib, sys
+
+          # Security headers that must appear identically across all hosting configs.
+          required = [
+              'Content-Security-Policy',
+              'X-Content-Type-Options',
+              'X-Frame-Options',
+              'Referrer-Policy',
+              'Permissions-Policy',
+              'Cross-Origin-Opener-Policy',
+              'Cross-Origin-Resource-Policy',
+          ]
+
+          failed = False
+
+          vercel_path = pathlib.Path('vercel.json')
+          if not vercel_path.exists():
+              print('::error::vercel.json missing; this is the source of truth.')
+              sys.exit(1)
+
+          vercel = json.loads(vercel_path.read_text())
+          vercel_headers = {}
+          for block in vercel.get('headers', []):
+              if block.get('source') == '/(.*)':
+                  for h in block.get('headers', []):
+                      vercel_headers[h['key']] = h['value']
+
+          missing_in_vercel = [k for k in required if k not in vercel_headers]
+          if missing_in_vercel:
+              print(f'::error file=vercel.json::Missing headers: {missing_in_vercel}')
+              failed = True
+
+          for name in ('_headers', 'netlify.toml'):
+              p = pathlib.Path(name)
+              if not p.exists():
+                  print(f'::warning::{name} not present; skipping parity check.')
+                  continue
+              body = p.read_text()
+              for key in required:
+                  if key not in body:
+                      print(f'::error file={name}::Header "{key}" missing from {name} (defined in vercel.json).')
+                      failed = True
+              print(f'OK: {name} contains all {len(required)} required header names.')
+
+          sys.exit(1 if failed else 0)
+          PY

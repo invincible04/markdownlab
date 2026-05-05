@@ -12,7 +12,7 @@
  * activate() purges every cache whose name doesn't match.
  */
 
-const CACHE_VERSION = 'markdownlab-v2';
+const CACHE_VERSION = 'markdownlab-v5';
 
 // Pre-cached on install so the first offline visit works even if the
 // user has never fetched a given asset before.
@@ -82,9 +82,8 @@ self.addEventListener('install', (event) => {
         cache.add(new Request(url, { mode: 'no-cors' })).catch(() => null)
       )
     );
-    // Activate immediately on first install. Subsequent updates still
-    // wait for open tabs to close.
-    self.skipWaiting();
+    // First install auto-activates (no existing controller). Subsequent
+    // updates wait for the app's SKIP_WAITING message.
   })());
 });
 
@@ -97,6 +96,11 @@ self.addEventListener('activate', (event) => {
     // Take control of pages that loaded before this SW activated.
     await self.clients.claim();
   })());
+});
+
+// Lets the app trigger activation of a waiting SW.
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (event) => {

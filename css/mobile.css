@@ -60,7 +60,7 @@
   a,
   input,
   textarea,
-  [role="button"],
+  [role='button'],
   .btn,
   .tab,
   .dropdown__item,
@@ -71,7 +71,7 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* Accent-tab nav appearance for form fields on iOS. Exclude checkboxes
+  /* Reset the native iOS appearance for form fields. Exclude checkboxes
      and radios — resetting `appearance` on those erases the native widget
      entirely, which breaks GFM task-list rendering in the preview. */
   input:not([type='checkbox']):not([type='radio']),
@@ -119,18 +119,15 @@
     border-bottom: 1px solid var(--border);
     box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 40%, transparent);
   }
-  .topbar::before { display: none; }
 
   /* --- Brand cluster: just the hamburger + filename on mobile. ----------- */
   .topbar__brand {
     gap: 8px;
     min-width: 0;
   }
-  /* Hide logo and visible brand span — the narrow bar only shows the
-     filename/autosave indicator. The visually-hidden <h1> stays in the
-     a11y tree. */
-  .topbar__logo,
+  /* Hide brand text — the narrow bar shows logo + filename only. */
   .topbar__title-brand { display: none; }
+  .topbar__logo { flex-shrink: 0; }
 
   /* Reset desktop column layout: single left-aligned horizontal row. */
   .topbar__title {
@@ -185,8 +182,8 @@
     margin-right: 0;
     opacity: 1;
   }
-  .topbar__brand .topbar__subtitle-state[data-state="dirty"]::before { background: var(--accent); }
-  .topbar__brand .topbar__subtitle-state[data-state="error"]::before { background: var(--danger, #ef4444); }
+  .topbar__brand .topbar__subtitle-state[data-state='dirty']::before { background: var(--accent); }
+  .topbar__brand .topbar__subtitle-state[data-state='error']::before { background: var(--danger, #ef4444); }
 
   /* --- Hamburger: 40×40 with a visible surface on press ------------------ */
   .topbar__sidebar-toggle {
@@ -214,7 +211,7 @@
     border-color: var(--border);
     transform: scale(0.94);
   }
-  .topbar__sidebar-toggle[aria-pressed="true"] {
+  .topbar__sidebar-toggle[aria-pressed='true'] {
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
@@ -225,7 +222,7 @@
   /* --- Hide secondary actions that don't survive on mobile. --------------- */
   #btn-palette,
   #btn-focus,
-  .topbar__actions [data-dropdown="examples"] { display: none; }
+  .topbar__actions [data-dropdown='examples'] { display: none; }
 
   /* --- Action cluster: Upload · Theme · | · Export ----------------------- */
   .topbar__actions {
@@ -236,12 +233,12 @@
 
   /* Subtle vertical divider between the icon triad and the primary Export
      pill — gives the action cluster a clear "primary + secondary" hierarchy. */
-  .topbar__actions [data-dropdown="export"] {
+  .topbar__actions [data-dropdown='export'] {
     position: relative;
     margin-left: 6px;
     padding-left: 8px;
   }
-  .topbar__actions [data-dropdown="export"]::before {
+  .topbar__actions [data-dropdown='export']::before {
     content: '';
     position: absolute;
     left: 0;
@@ -294,23 +291,29 @@
   }
   .topbar__actions #btn-upload > span { display: none; }
 
-  /* Export: compact accent-gradient pill, matches icon-button height (40px)
-     for a clean baseline. Keeps "Export" label since it's the primary action. */
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
-    padding: 0 14px;
+  /* Export button: icon-only 40×40 to match other actions. */
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger {
+    min-width: 40px;
+    width: 40px;
     height: 40px;
     min-height: 40px;
+    padding: 0;
     border-radius: 10px;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: -0.005em;
+    justify-content: center;
   }
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger > span {
-    display: inline;
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger > span {
+    display: none;
   }
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger .dropdown__caret,
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger .btn__kbd { display: none; }
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger .dropdown__caret,
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger .btn__kbd { display: none; }
+  /* Remove the divider — all buttons are uniform icons now. */
+  .topbar__actions [data-dropdown='export'] {
+    margin-left: 0;
+    padding-left: 0;
+  }
+  .topbar__actions [data-dropdown='export']::before {
+    display: none;
+  }
 
   /* Dropdown menus open from topbar: anchor to the right edge. */
   .topbar .dropdown__menu {
@@ -433,7 +436,7 @@
   }
 
   /* Hide the Split button — there's no split on mobile. */
-  .topbar .topbar__nav .segmented__item[data-view="split"] { display: none; }
+  .topbar .topbar__nav .segmented__item[data-view='split'] { display: none; }
 
   /* Two-up layout; each segment claims half the pill. */
   .topbar .topbar__nav .segmented__item {
@@ -463,12 +466,12 @@
   }
 
   /* Relabel: "Editor" → "Write", "Preview" → "Read" (spec requirement). */
-  .topbar .topbar__nav .segmented__item[data-view="editor"]::after {
+  .topbar .topbar__nav .segmented__item[data-view='editor']::after {
     content: "Write";
     font-size: 14px;
     font-weight: 600;
   }
-  .topbar .topbar__nav .segmented__item[data-view="preview"]::after {
+  .topbar .topbar__nav .segmented__item[data-view='preview']::after {
     content: "Read";
     font-size: 14px;
     font-weight: 600;
@@ -881,9 +884,9 @@
   .statusbar__group--center::after { display: none; }
 
   /* Hide developer-detail stats. Keep words + reading time. */
-  .statusbar .stat[title="Characters"],
-  .statusbar .stat[title="Lines"],
-  .statusbar .stat[title="Last render time"] { display: none; }
+  .statusbar .stat[title='Characters'],
+  .statusbar .stat[title='Lines'],
+  .statusbar .stat[title='Last render time'] { display: none; }
 
   /* Hide tertiary links — shortcuts (keyboard-first) and GitHub. */
   #btn-shortcuts,
@@ -903,19 +906,25 @@
  * ========================================================================== */
 @media (max-width: 900px) {
 
-  /* Find bar (dynamically injected by app.js for ⌘F). 16px input prevents
-     iOS auto-zoom; 40×40 buttons. */
+  /* Find bar (injected by app.js for ⌘F). 16px input blocks iOS zoom;
+     34–36px tap targets without bloating the bar. */
   .find-bar__input {
     font-size: 16px;
-    min-height: 40px;
+    min-height: 34px;
   }
   .find-bar__btn {
-    min-width: 40px;
-    min-height: 40px;
-  }
-  .find-bar__toggle {
     min-width: 36px;
     min-height: 36px;
+  }
+  .find-bar__toggle {
+    min-width: 32px;
+    min-height: 34px;
+  }
+  /* Chevron: narrower width than the row height so it reads as a
+     left-gutter affordance rather than a full button. */
+  .find-bar__expand {
+    min-width: 24px;
+    min-height: 34px;
   }
 
   /* Inline rename inputs inside the sidebar tree — 16px to prevent zoom. */
@@ -958,19 +967,29 @@
     padding: 10px 14px;
   }
 
-  /* Lightbox — adapt toolbar to fit. */
+  /* Lightbox — compact single-row toolbar. Six 38px buttons + zoom
+     label (~244px) fit phones down to 320px. */
   .lightbox__toolbar {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: center;
-    padding: 8px;
-    top: env(safe-area-inset-top);
-    gap: 6px;
+    padding: 5px 6px;
+    top: max(8px, env(safe-area-inset-top));
+    gap: 2px;
+    border-radius: 14px;
+    max-width: calc(100vw - 20px);
   }
+  .lightbox__sep { display: none; }
   .lightbox__btn {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 38px;  min-height: 38px;
+    width: 38px;      height: 38px;
   }
-  .lightbox__hint { display: none; }
+  .lightbox__zoom {
+    min-width: 40px;
+    font-size: 11px;
+    padding: 0 2px;
+  }
+  .lightbox__hint--desktop { display: none; }
+  .lightbox__hint--touch { display: block; }
 
   /* Drop overlay — soften to feel like a native import sheet. */
   .drop-overlay__card {
@@ -1025,18 +1044,6 @@
     padding-top: env(safe-area-inset-top);
   }
 
-  /* Export button loses its text; becomes a matching 40×40 icon button
-     so the whole action cluster reads as a uniform row on narrow phones. */
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
-    min-width: 40px;
-    width: 40px;
-    padding: 0;
-    justify-content: center;
-  }
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger > span {
-    display: none;
-  }
-
   /* Filename in the middle shrinks a hair. */
   .topbar__brand .topbar__subtitle-name {
     font-size: 14px;
@@ -1069,8 +1076,8 @@
     font-size: 0;
     padding: 0 12px;
   }
-  .topbar .topbar__nav .segmented__item[data-view="editor"]::after,
-  .topbar .topbar__nav .segmented__item[data-view="preview"]::after {
+  .topbar .topbar__nav .segmented__item[data-view='editor']::after,
+  .topbar .topbar__nav .segmented__item[data-view='preview']::after {
     font-size: 13.5px;
   }
 
@@ -1151,7 +1158,7 @@
   .topbar__sidebar-toggle,
   .topbar__actions .btn--icon,
   .topbar__actions #btn-upload,
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger {
     width: 36px;
     height: 36px;
     min-width: 36px;
@@ -1159,7 +1166,7 @@
   }
 
   /* Tighter divider before the Export pill. */
-  .topbar__actions [data-dropdown="export"] {
+  .topbar__actions [data-dropdown='export'] {
     margin-left: 3px;
     padding-left: 5px;
   }
@@ -1204,7 +1211,7 @@
   .topbar { min-height: 44px; }
   .topbar__sidebar-toggle,
   .topbar__actions .btn--icon,
-  .topbar__actions [data-dropdown="export"] .dropdown__trigger {
+  .topbar__actions [data-dropdown='export'] .dropdown__trigger {
     width: 40px;
     height: 40px;
     min-width: 40px;
@@ -1288,14 +1295,12 @@
     transform: none;
   }
 
-  /* Ensure every tappable icon has a real hit area. */
+  /* Tappable icons — real hit area. Excludes .lightbox__btn (sized in
+     the ≤900px toolbar block) and .find-bar__btn/__toggle (tighter, above). */
   .btn--icon,
   .tab__close,
   .sidebar__icon-btn,
-  .focus-dock__btn,
-  .lightbox__btn,
-  .find-bar__btn,
-  .find-bar__toggle {
+  .focus-dock__btn {
     min-width: 40px;
     min-height: 40px;
   }

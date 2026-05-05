@@ -45,7 +45,7 @@ Use the hosted version at **[markdownlab.vercel.app](https://markdownlab.vercel.
 ```sh
 git clone https://github.com/invincible04/markdownlab.git
 cd markdownlab
-open index.html            # or: python3 -m http.server 8000
+python3 -m http.server 8000
 ```
 
 No build step, no package manager. `index.html` is the entry point and pulls pinned runtime dependencies from jsdelivr on demand.

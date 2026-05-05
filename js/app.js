@@ -105,13 +105,66 @@ Promise.resolve().then(() => init()).catch(err => {
     String(err?.stack || err?.message || err).replace(/</g,'&lt;') + '</pre>';
 });
 
-// Register the service worker for offline support. Deferred to `load`
-// so SW cache-warmup doesn't compete with critical resources on first
-// paint. HTTPS-only; file:// and http:// skip.
+// Service worker: offline support + update prompt. Deferred to `load`
+// so cache warmup doesn't compete with critical resources.
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+      .then((reg) => {
+        // Poll on visibility/focus instead of setInterval so idle tabs
+        // don't hammer the network; throttled to once per 24h.
+        const UPDATE_COOLDOWN = 24 * 60 * 60 * 1000;
+        let lastUpdateCheck = 0;
+        const maybeUpdate = () => {
+          if (document.visibilityState !== 'visible') return;
+          const now = Date.now();
+          if (now - lastUpdateCheck < UPDATE_COOLDOWN) return;
+          lastUpdateCheck = now;
+          reg.update().catch(() => {});
+        };
+        document.addEventListener('visibilitychange', maybeUpdate);
+        window.addEventListener('focus', maybeUpdate);
+
+        // Persistent "new version" toast with a Reload action.
+        function onUpdateReady(worker) {
+          if (worker.state !== 'installed' || !navigator.serviceWorker.controller) return;
+          if (!toast) return;
+          clearTimeout(toastTimer);
+          toast.dataset.variant = 'info';
+          toast.classList.add('is-show', 'has-action');
+          toast.textContent = '';
+          const label = document.createElement('span');
+          label.className = 'toast__label';
+          label.textContent = 'A new version is available';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'toast__action';
+          btn.textContent = 'Reload';
+          btn.addEventListener('click', () => {
+            toast.classList.remove('is-show', 'has-action');
+            worker.postMessage({ type: 'SKIP_WAITING' });
+          });
+          toast.append(label, btn);
+        }
+
+        if (reg.waiting) onUpdateReady(reg.waiting);
+        reg.addEventListener('updatefound', () => {
+          const incoming = reg.installing;
+          if (!incoming) return;
+          incoming.addEventListener('statechange', () => onUpdateReady(incoming));
+        });
+      })
       .catch(err => console.warn('Service worker registration failed:', err));
+
+    // Reload once the new SW takes control. Skip on first install.
+    if (navigator.serviceWorker.controller) {
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
+    }
   });
 }
 
@@ -748,8 +801,16 @@ function formatFrontmatterScalar(v) {
 // leave placeholders that are re-injected after marked runs.
 const MATH_PLACEHOLDER = (i) => `@@MATH_PLACEHOLDER_${i}@@`;
 
+// Cached math ranges from the last render(), in full-source coordinates.
+// Read by computePreviewHiddenRanges() so find can treat matches inside
+// $…$ / $$…$$ as hidden (the KaTeX walker rejects them). `_lastMathSrc`
+// sentinel prevents reading stale ranges when the editor is mid-keystroke.
+let _lastMathRanges = [];
+let _lastMathSrc = null;
+
 function extractMath(src) {
   const renders = [];
+  const ranges = [];   // {start, end, display} in body-local offsets
   const out = [];
   let i = 0;
 
@@ -801,6 +862,7 @@ function extractMath(src) {
         const idx = renders.length;
         renders.push(renderKatex(tex, true));
         out.push(`\n\n${MATH_PLACEHOLDER(idx)}\n\n`);
+        ranges.push({ start: i, end: close + 2, display: true });
         i = close + 2;
         continue;
       }
@@ -831,6 +893,7 @@ function extractMath(src) {
             const idx = renders.length;
             renders.push(renderKatex(tex, false));
             out.push(MATH_PLACEHOLDER(idx));
+            ranges.push({ start: i, end: found + 1, display: false });
             i = found + 1;
             continue;
           }
@@ -842,7 +905,7 @@ function extractMath(src) {
     i++;
   }
 
-  return { processed: out.join(''), renders };
+  return { processed: out.join(''), renders, mathRanges: ranges };
 }
 
 function renderKatex(tex, displayMode) {
@@ -906,8 +969,26 @@ async function render() {
 
   try {
     const { frontmatterHtml, body } = extractFrontmatter(src);
-    const { processed, renders } = extractMath(body);
-    let html = marked.parse(processed);
+    const { processed, renders, mathRanges } = extractMath(body);
+
+    // Shift math ranges into full-source coords once here so the find
+    // system doesn't have to re-apply the frontmatter offset on every read.
+    const bodyOffset = src.length - body.length;
+    _lastMathRanges = mathRanges.map(r => ({
+      start: r.start + bodyOffset,
+      end: r.end + bodyOffset,
+      display: r.display,
+    }));
+    _lastMathSrc = src;
+
+    // Normalize tabs inside GFM table separator rows — pasted tables often
+    // carry trailing tabs that would otherwise fail the marked tokenizer.
+    const tableNormalized = processed.replace(
+      /^(\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*)$/gm,
+      (line) => line.replace(/\t/g, ' ')
+    );
+
+    let html = marked.parse(tableNormalized);
     html = reinjectMath(html, renders);
     if (frontmatterHtml) html = frontmatterHtml + html;
 
@@ -929,6 +1010,11 @@ async function render() {
       if (gen !== _renderGen) return;
       postProcess();
       buildToc();
+      // Preview DOM was replaced — re-run find against the fresh tree.
+      if (isFindBarOpen()) {
+        const q = document.getElementById('find-input')?.value || '';
+        if (q) runFind(q);
+      }
     }
 
     // On a no-op render (same sanitized HTML AND same source block structure),
@@ -953,9 +1039,8 @@ async function render() {
   }
 }
 
-// Restore source text and clear processed/error flags so mermaid.run can
-// regenerate against fresh innerHTML. Setting textContent clears any prior
-// SVG children.
+// Restore raw Mermaid source + clear processed/error flags. Used by the
+// PDF export path before re-running mermaid inside a print iframe.
 function resetMermaidNodes(nodes) {
   nodes.forEach((el) => {
     el.removeAttribute('data-processed');
@@ -966,36 +1051,167 @@ function resetMermaidNodes(nodes) {
   });
 }
 
+// Offscreen sandbox for mermaid.render(). Rendering inside a display:none
+// pane returns 0×0 bounding rects and Dagre then emits NaN transforms;
+// an off-screen-but-laid-out container keeps measurements honest.
+let _mermaidSandbox = null;
+function ensureMermaidSandbox() {
+  if (_mermaidSandbox && _mermaidSandbox.isConnected) return _mermaidSandbox;
+  _mermaidSandbox = document.createElement('div');
+  _mermaidSandbox.id = 'mermaid-sandbox';
+  _mermaidSandbox.setAttribute('aria-hidden', 'true');
+  // 1200px mirrors a typical preview column width.
+  _mermaidSandbox.style.cssText =
+    'position:fixed;left:-99999px;top:0;width:1200px;height:auto;' +
+    'pointer-events:none;contain:layout style;';
+  document.body.appendChild(_mermaidSandbox);
+  return _mermaidSandbox;
+}
+
+const isStaleRender = (gen) => gen !== undefined && gen !== _renderGen;
+
 async function runMermaid(gen) {
-  const nodes = preview.querySelectorAll('.mermaid');
+  const nodes = Array.from(preview.querySelectorAll('.mermaid'));
   if (!nodes.length) return;
 
-  resetMermaidNodes(nodes);
-
-  try {
-    await mermaid.run({ nodes: Array.from(nodes), suppressErrors: true });
-  } catch (err) {
-    console.warn('Mermaid run error:', err);
-  }
-
-  // If a newer render replaced preview.innerHTML while we were awaiting,
-  // the captured `nodes` are detached; bail rather than paint onto ghosts.
-  if (gen !== undefined && gen !== _renderGen) return;
-
-  const live = preview.querySelectorAll('.mermaid');
-  live.forEach((el) => {
-    if (el.querySelector('svg')) return;
-    const src = el.getAttribute('data-mermaid-src');
-    el.classList.add('is-error');
-    el.innerHTML = `<strong>Diagram error</strong><pre>${escapeHtml(src ? decodeURIComponent(src) : el.textContent)}</pre>`;
+  nodes.forEach((el) => {
+    el.removeAttribute('data-processed');
+    el.classList.remove('is-error');
+    if (!el.id) el.id = `mermaid-${++mermaidCounter}`;
   });
 
-  // Luminance-aware contrast pass: fixes unreadable text on user-authored
-  // `style X fill:#lightcolor` directives in dark mode without hard-coding
-  // a single foreground. See applyMermaidContrast for the algorithm.
-  live.forEach(applyMermaidContrast);
+  const sandbox = ensureMermaidSandbox();
 
+  // Sequential: parallel mermaid.render() calls race on the sandbox container.
+  for (const el of nodes) {
+    if (isStaleRender(gen)) return;
+
+    const raw = el.getAttribute('data-mermaid-src');
+    const code = raw ? decodeURIComponent(raw) : el.textContent;
+    if (!code.trim()) continue;
+
+    const renderId = `mmd-${el.id}-${++mermaidCounter}`;
+    try {
+      const { svg, bindFunctions } = await mermaid.render(renderId, code, sandbox);
+      if (isStaleRender(gen)) return;
+      el.innerHTML = svg;
+      el.setAttribute('data-processed', 'true');
+      if (typeof bindFunctions === 'function') bindFunctions(el);
+    } catch (err) {
+      console.warn('Mermaid render error:', err);
+      renderMermaidError(el, err, code);
+    }
+  }
+
+  sandbox.innerHTML = '';
+  if (isStaleRender(gen)) return;
+
+  const live = preview.querySelectorAll('.mermaid');
+  // Luminance-aware contrast pass — see applyMermaidContrast below.
+  live.forEach(applyMermaidContrast);
   live.forEach(attachDiagramControls);
+}
+
+// Lucide alert-triangle, inlined so the error card has no external deps.
+const MERMAID_ERROR_ICON = `
+  <svg class="mermaid-error__icon" width="16" height="16" viewBox="0 0 24 24"
+       fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+    <line x1="12" y1="9" x2="12" y2="13"/>
+    <line x1="12" y1="17" x2="12.01" y2="17"/>
+  </svg>`;
+
+// Parse Mermaid's Jison error into { line, summary }. Prefers err.hash
+// (structured) and falls back to regex on the message string.
+function parseMermaidError(err) {
+  const hash = err?.hash;
+  const msg = String(err?.message || 'Parse error');
+  let line = null;
+  let summary = '';
+
+  if (typeof hash?.line === 'number') {
+    line = hash.line + 1;
+  } else {
+    const m = /Parse error on line (\d+)/i.exec(msg);
+    if (m) line = Number(m[1]);
+  }
+
+  if (hash?.token) {
+    const expected = Array.isArray(hash.expected)
+      ? hash.expected.map(s => String(s).replace(/^'|'$/g, '')).slice(0, 4).join(', ')
+      : '';
+    summary = `Unexpected \`${hash.text ?? hash.token}\``
+      + (expected ? ` — expected ${expected}` : '');
+  } else {
+    const em = /Expecting ([^\n]+?),?\s*got\s*'?([^'\n]+)'?/i.exec(msg);
+    if (em) {
+      const exp = em[1].split(',').slice(0, 4).map(s => s.replace(/'/g, '').trim()).join(', ');
+      summary = `Unexpected \`${em[2].trim()}\` — expected ${exp}`;
+    } else {
+      summary = msg.split('\n')[0];
+    }
+  }
+
+  return { line, summary };
+}
+
+// Render a readable error card in place of a failed diagram.
+function renderMermaidError(el, err, code) {
+  el.classList.add('is-error');
+  el.setAttribute('role', 'alert');
+  el.innerHTML = '';
+
+  const { line: badLine, summary } = parseMermaidError(err);
+
+  const header = document.createElement('div');
+  header.className = 'mermaid-error__header';
+  header.innerHTML = `${MERMAID_ERROR_ICON}
+    <div class="mermaid-error__titles">
+      <strong>Couldn't render diagram</strong>
+      <span class="mermaid-error__summary"></span>
+    </div>`;
+  header.querySelector('.mermaid-error__summary').textContent =
+    (badLine ? `Line ${badLine}: ` : '') + summary;
+  el.appendChild(header);
+
+  const pre = document.createElement('pre');
+  pre.className = 'mermaid-error__source';
+  const lines = code.split('\n');
+  const pad = String(lines.length).length;
+  pre.innerHTML = lines.map((text, i) => {
+    const n = i + 1;
+    const cls = n === badLine ? ' is-bad' : '';
+    const gutter = String(n).padStart(pad, ' ');
+    return `<span class="mermaid-error__line${cls}">`
+      + `<span class="mermaid-error__ln" aria-hidden="true">${gutter}</span>`
+      + `<span class="mermaid-error__code">${escapeHtml(text) || ' '}</span>`
+      + `</span>`;
+  }).join('');
+  el.appendChild(pre);
+
+  // Fenced clipboard payload — re-renderable when pasted elsewhere.
+  const errorLine = (badLine ? `Line ${badLine}: ` : '') + summary;
+  const clipboardText =
+    `Mermaid render failed — ${errorLine}\n\n`
+    + '```mermaid\n' + code.replace(/\n+$/, '') + '\n```\n';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mermaid-error__copy';
+  btn.textContent = 'Copy source';
+  let copyResetTimer = 0;
+  btn.addEventListener('click', async () => {
+    const ok = await copyToClipboard(clipboardText);
+    btn.textContent = ok ? 'Copied' : 'Copy failed';
+    btn.classList.toggle('is-copied', ok);
+    clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => {
+      btn.textContent = 'Copy source';
+      btn.classList.remove('is-copied');
+    }, 1400);
+  });
+  el.appendChild(btn);
 }
 
 // ---- Mermaid contrast normalization ---------------------------------------
@@ -1173,6 +1389,8 @@ function toRgb(input) {
 }
 
 function attachDiagramControls(el) {
+  // Error cards contain their own warning <svg>; don't attach expand control.
+  if (el.classList.contains('is-error')) return;
   if (!el.querySelector('svg') || el.querySelector('.diagram-expand')) return;
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1228,6 +1446,36 @@ function postProcess() {
         e.preventDefault();
         scrollPreviewToHeading(target);
       });
+    }
+
+    // Relative .md link → in-app navigation, preserving #fragment scroll.
+    if (!/^(?:https?:|mailto:|#)/i.test(href) && /\.md(?:#|$)/i.test(href)) {
+      const [rawPath, fragment] = href.split('#');
+      let filename;
+      try {
+        filename = decodeURIComponent(rawPath.replace(/^\.\//, '').split('/').pop() || '');
+      } catch { filename = rawPath.replace(/^\.\//, '').split('/').pop() || ''; }
+      if (filename) {
+        a.title = `Open ${filename}`;
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const proj = Store.activeProject();
+          if (!proj) return;
+          const match = Store.filesIn(proj.id).find((f) => f.name.toLowerCase() === filename.toLowerCase());
+          if (match) {
+            switchToFile(match.id).then(() => {
+              if (!fragment) return;
+              // Double-rAF waits for render() layout to settle.
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                const heading = preview.querySelector(`#${cssEscape(fragment)}`);
+                if (heading) scrollPreviewToHeading(heading);
+              }));
+            }).catch(() => {});
+          } else {
+            showToast(`File "${filename}" not found in this project`, 'warning');
+          }
+        });
+      }
     }
   });
 
@@ -1317,9 +1565,11 @@ function buildToc() {
   _tocHeadingsCache = headings;
 
   if (!headings.length) {
-    tocNav.replaceChildren();
+    // Keep the .toc__indicator alive so CSS transitions persist.
+    tocNav.querySelector('.toc__list')?.remove();
     toc.dataset.empty = 'true';
     _tocActiveId = null;
+    hideTocIndicator();
     return;
   }
   toc.dataset.empty = 'false';
@@ -1349,13 +1599,19 @@ function buildToc() {
     list.appendChild(li);
   }
 
-  tocNav.replaceChildren(list);
+  // Swap only the <ul>; the .toc__indicator sibling must survive rebuilds.
+  const existingList = tocNav.querySelector('.toc__list');
+  if (existingList) existingList.replaceWith(list);
+  else tocNav.appendChild(list);
 
   if (prevActiveId && headings.some(h => h.id === prevActiveId)) {
     setActiveTocLink(prevActiveId);
   } else {
     _tocActiveId = null;
   }
+
+  // Re-observe for late layout shifts (Mermaid/KaTeX/images).
+  observeTocHeadings();
 
   scheduleTocActiveUpdate();
 }
@@ -1445,17 +1701,75 @@ function setActiveTocLink(id) {
       link.removeAttribute('aria-current');
     }
   });
+  positionTocIndicator(activeLink);
   if (activeLink) keepTocLinkVisible(activeLink);
+  else hideTocIndicator();
 }
 
+// Sum offsetTop through offsetParents up to `ancestor`. Shared by indicator
+// positioning and center-follow so both agree on link Y.
+function offsetRelativeTo(child, ancestor) {
+  let top = 0;
+  let el = child;
+  while (el && el !== ancestor) {
+    top += el.offsetTop;
+    el = el.offsetParent;
+  }
+  return top;
+}
+
+// Slide the single .toc__indicator bar to `link` via composited transform
+// + height — no per-link border repaints.
+function positionTocIndicator(link) {
+  if (!tocNav) return;
+  const indicator = tocNav.querySelector('.toc__indicator');
+  if (!indicator) return;
+  if (!link) {
+    indicator.classList.remove('is-visible');
+    return;
+  }
+  const top = offsetRelativeTo(link, tocNav);
+  indicator.style.transform = `translateY(${top}px)`;
+  indicator.style.height = `${link.offsetHeight}px`;
+  indicator.classList.add('is-visible');
+}
+
+function hideTocIndicator() {
+  if (!tocNav) return;
+  tocNav.querySelector('.toc__indicator')?.classList.remove('is-visible');
+}
+
+// Re-pin indicator + recentre active link. Invoked after resize, outline
+// toggle, and any path that invalidates cached offsets.
+function resyncTocActiveLink() {
+  if (!toc || toc.dataset.empty === 'true') return;
+  _tocHeadingTops = [];
+  if (!_tocActiveId) return;
+  const link = tocNav?.querySelector(`.toc__link[data-id="${cssEscape(_tocActiveId)}"]`);
+  if (!link) return;
+  positionTocIndicator(link);
+  keepTocLinkVisible(link);
+}
+
+// Centre-follow: scroll TOC so the active link sits at mid-height, clamped.
+// 4px dead-band prevents jitter when scrollspy + follow resolve same frame.
 function keepTocLinkVisible(link) {
-  const navRect = tocNav.getBoundingClientRect();
-  const linkRect = link.getBoundingClientRect();
-  const margin = 24;
-  if (linkRect.top < navRect.top + margin) {
-    tocNav.scrollBy({ top: linkRect.top - navRect.top - margin, behavior: 'smooth' });
-  } else if (linkRect.bottom > navRect.bottom - margin) {
-    tocNav.scrollBy({ top: linkRect.bottom - navRect.bottom + margin, behavior: 'smooth' });
+  if (!tocNav || !link) return;
+  const maxScroll = tocNav.scrollHeight - tocNav.clientHeight;
+  if (maxScroll <= 1) return;
+
+  const linkTop = offsetRelativeTo(link, tocNav);
+  const linkCenter = linkTop + (link.offsetHeight / 2);
+  const viewHalf = tocNav.clientHeight / 2;
+  const target = Math.max(0, Math.min(maxScroll, linkCenter - viewHalf));
+
+  if (Math.abs(target - tocNav.scrollTop) < 4) return;
+
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  try {
+    tocNav.scrollTo({ top: target, behavior: reduceMotion ? 'auto' : 'smooth' });
+  } catch {
+    tocNav.scrollTop = target;
   }
 }
 
@@ -1644,7 +1958,12 @@ function applyTocToggle(visible, { silent = false } = {}) {
   // Drawer-mode side-effects (scrim, body lock, scroll-into-active). These
   // are no-ops above the 1100px breakpoint — driven entirely by media query.
   updateTocDrawerState(on);
-  if (on) scheduleTocActiveUpdate();
+  if (on) {
+    // Defer one frame — the panel may still be expanding, so offset
+    // reads need fresh layout.
+    requestAnimationFrame(resyncTocActiveLink);
+    scheduleTocActiveUpdate();
+  }
   if (!silent) showToast(on ? 'Outline on' : 'Outline off', 'info');
 }
 
@@ -1732,82 +2051,128 @@ btnToc?.addEventListener('click', () => {
 });
 btnTocClose?.addEventListener('click', () => applyTocToggle(false));
 
-// Pan + zoom viewer for Mermaid SVGs
+// Viewport resize reflows link text — offsetTop/Height shift, so re-sync.
+function syncTocOnReflow() {
+  resyncTocActiveLink();
+  if (toc && toc.dataset.empty !== 'true') scheduleTocActiveUpdate();
+}
+window.addEventListener('resize', syncTocOnReflow, { passive: true });
+
+// Catch late layout shifts (Mermaid/KaTeX/images) that don't fire scroll.
+// Re-observed on every buildToc() to track the current document.
+let _tocHeadingObserver = null;
+function observeTocHeadings() {
+  if (!('IntersectionObserver' in window)) return;
+  if (_tocHeadingObserver) {
+    _tocHeadingObserver.disconnect();
+    _tocHeadingObserver = null;
+  }
+  if (!_tocHeadingsCache.length) return;
+  _tocHeadingObserver = new IntersectionObserver(() => {
+    _tocHeadingTops = [];
+    scheduleTocActiveUpdate();
+  }, { root: previewWrap || null, threshold: [0, 1] });
+  for (const h of _tocHeadingsCache) _tocHeadingObserver.observe(h);
+}
+
+// Lightbox: pan + zoom viewer for Mermaid SVGs.
+//
+// Zoom writes width/height ATTRIBUTES on the SVG (not CSS scale), so the
+// browser re-rasterizes vectors at each level — labels stay crisp, including
+// HTML inside <foreignObject>. Pan uses a translate() transform. `scale=1`
+// means the SVG's natural pixel size (the "100%" label).
+const LB_PAD        = 90;    // stage-edge padding in fit calc
+const LB_MAX_FIT    = 4;     // cap so small diagrams don't balloon
+const LB_ZOOM_STEP  = 1.2;   // button / keyboard zoom factor
+const LB_ARROW_PAN  = 60;    // px per arrow-key press
+const LB_HINT_MS    = 3200;  // hint auto-hide delay
+
 const lightbox = {
   root:   document.getElementById('lightbox'),
   stage:  document.getElementById('lightbox-stage'),
   canvas: document.getElementById('lightbox-canvas'),
   zoomLbl:document.getElementById('lightbox-zoom'),
-  scale: 1,
-  tx: 0, ty: 0,
-  minScale: 0.1,
-  maxScale: 8,
+  scale: 1, tx: 0, ty: 0,
+  minScale: 0.1, maxScale: 8,
   sourceTitle: '',
+  renderSize: { w: 0, h: 0 }, // natural SVG pixel size (from viewBox)
 };
 
+const clampScale = (s) => Math.max(lightbox.minScale, Math.min(lightbox.maxScale, s));
+
+// Read the SVG's natural bounds. Falls back to its rendered box when the
+// diagram has no viewBox (rare — custom / hand-authored SVG).
+function readNaturalSize(svg) {
+  const vb = svg.viewBox?.baseVal;
+  if (vb && vb.width > 0 && vb.height > 0) {
+    return { w: vb.width, h: vb.height, hasViewBox: true };
+  }
+  const rect = svg.getBoundingClientRect();
+  return { w: rect.width || 800, h: rect.height || 600, hasViewBox: false };
+}
+
 function applyLightboxTransform() {
+  const svg = lightbox.canvas.querySelector('svg');
+  if (!svg || !lightbox.renderSize.w) return;
+  // Attribute writes force a vector re-render at the new resolution.
+  svg.setAttribute('width',  String(lightbox.renderSize.w * lightbox.scale));
+  svg.setAttribute('height', String(lightbox.renderSize.h * lightbox.scale));
   lightbox.canvas.style.transform =
-    `translate(-50%, -50%) translate(${lightbox.tx}px, ${lightbox.ty}px) scale(${lightbox.scale})`;
+    `translate(-50%, -50%) translate(${lightbox.tx}px, ${lightbox.ty}px)`;
   lightbox.zoomLbl.textContent = Math.round(lightbox.scale * 100) + '%';
 }
 
-// Smooth easing for discrete actions (buttons, keyboard); off for wheel so
-// rapid ticks snap instantly and don't lag behind the cursor.
-function setLightboxSmooth(on) {
-  lightbox.canvas.style.transition = on
-    ? 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1)'
-    : 'transform 0s';
-}
-
+// Fit to stage and reset pan. Re-derives from current stage size each call
+// so window resize + 'reset' both route through here.
 function fitLightbox() {
-  const svg = lightbox.canvas.querySelector('svg');
-  if (!svg) return;
-  const vb = svg.viewBox?.baseVal;
-  const svgW = vb?.width  || svg.getBoundingClientRect().width  || 800;
-  const svgH = vb?.height || svg.getBoundingClientRect().height || 600;
-  const stageR = lightbox.stage.getBoundingClientRect();
-  const pad = 48;
-  const fit = Math.min((stageR.width - pad) / svgW, (stageR.height - pad) / svgH, 4);
+  if (!lightbox.renderSize.w) return;
+  const { width, height } = lightbox.stage.getBoundingClientRect();
+  const fit = Math.min(
+    (width  - LB_PAD) / lightbox.renderSize.w,
+    (height - LB_PAD) / lightbox.renderSize.h,
+    LB_MAX_FIT
+  );
   lightbox.scale = fit > 0 ? fit : 1;
-  lightbox.tx = 0;
-  lightbox.ty = 0;
+  lightbox.tx = lightbox.ty = 0;
   applyLightboxTransform();
 }
 
-function openLightbox(mermaidEl) {
-  const svg = mermaidEl.querySelector('svg');
-  if (!svg) return;
+// Clone `svg` into the canvas and record its natural pixel size. Strips
+// inline sizing so our zoom attribute writes fully own width/height.
+function mountLightboxSvg(svg) {
   const clone = svg.cloneNode(true);
   clone.removeAttribute('style');
   clone.removeAttribute('width');
   clone.removeAttribute('height');
-  const vb = svg.viewBox?.baseVal;
-  if (vb) {
-    clone.setAttribute('width', vb.width);
-    clone.setAttribute('height', vb.height);
-  }
+  const { w, h, hasViewBox } = readNaturalSize(svg);
+  if (!hasViewBox) clone.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  lightbox.renderSize = { w, h };
   lightbox.canvas.innerHTML = '';
   lightbox.canvas.appendChild(clone);
+}
+
+function openLightbox(mermaidEl) {
+  const svg = mermaidEl.querySelector('svg');
+  if (!svg || !lightbox.root) return;
+  mountLightboxSvg(svg);
   lightbox.sourceTitle = mermaidEl.id || 'diagram';
+  // Keep a live ref; rethemeMermaid swaps innerHTML inside this element.
+  lightbox._sourceEl = mermaidEl;
   lightbox.root.classList.add('is-open');
   document.body.style.overflow = 'hidden';
   lightbox._returnFocusTo = document.activeElement;
   installFocusTrap(lightbox.root);
   setTimeout(() => document.getElementById('lightbox-close')?.focus(), 10);
-  // Start slightly zoomed out, then ease to fit so the open has motion.
-  lightbox.scale = 0.92; lightbox.tx = 0; lightbox.ty = 0;
-  setLightboxSmooth(false);
-  applyLightboxTransform();
-  requestAnimationFrame(() => {
-    setLightboxSmooth(true);
-    fitLightbox();
-    showLightboxHint();
-  });
+
+  fitLightbox();
+  showLightboxHint();
 }
 
 function closeLightbox() {
   lightbox.root.classList.remove('is-open');
   lightbox.canvas.innerHTML = '';
+  lightbox.renderSize = { w: 0, h: 0 };
+  lightbox._sourceEl = null;
   document.body.style.overflow = '';
   releaseFocusTrap(lightbox.root);
   const prev = lightbox._returnFocusTo;
@@ -1817,13 +2182,37 @@ function closeLightbox() {
   }
 }
 
-// Shared modal focus trap. Cycles Tab/Shift+Tab within the dialog's
-// visible focusable descendants. Handler is stored on the root so
-// install/release calls are idempotent.
+// Re-mount the freshly themed SVG from the source element, preserving pan/zoom.
+function refreshLightboxSvg() {
+  const src = lightbox._sourceEl;
+  if (!src || !lightbox.root?.classList.contains('is-open')) return;
+  const svg = src.querySelector('svg');
+  if (!svg) return;
+  mountLightboxSvg(svg);
+  applyLightboxTransform();
+}
+
+// Theme toggle from inside the lightbox. Awaits rethemeMermaid so the
+// clone swap lands on the repainted SVG; scale/pan are preserved.
+async function toggleLightboxTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  applyTheme(next, true);
+  try {
+    await rethemeMermaid();
+  } catch (err) {
+    console.warn('Lightbox theme re-render error:', err);
+  }
+  refreshLightboxSvg();
+}
+
+// Shared modal focus trap. Cycles Tab / Shift+Tab within the dialog's
+// visible focusable descendants. Handler stored on the root so install
+// + release calls are idempotent.
 function installFocusTrap(root) {
   if (!root || root._focusTrap) return;
-  // offsetParent alone is unreliable (null for position:fixed regardless
-  // of visibility), so check bounding box + computed style.
+  // offsetParent is null for position:fixed regardless of visibility,
+  // so use bounding box + computed style instead.
   const isVisible = (el) => {
     if (!el.isConnected) return false;
     const rect = el.getBoundingClientRect();
@@ -1853,43 +2242,45 @@ function releaseFocusTrap(root) {
 
 let lightboxHintTimer;
 function showLightboxHint() {
-  const hint = document.querySelector('.lightbox__hint');
-  if (!hint) return;
-  hint.classList.add('is-show');
+  const hints = document.querySelectorAll('.lightbox__hint');
+  if (!hints.length) return;
+  hints.forEach(h => h.classList.add('is-show'));
   clearTimeout(lightboxHintTimer);
-  lightboxHintTimer = setTimeout(() => hint.classList.remove('is-show'), 3200);
+  lightboxHintTimer = setTimeout(() => hints.forEach(h => h.classList.remove('is-show')), LB_HINT_MS);
 }
 
+// Cursor-focused zoom: the point at (cx, cy) stays fixed as we scale.
 function zoomBy(factor, cx, cy) {
-  const newScale = Math.max(lightbox.minScale, Math.min(lightbox.maxScale, lightbox.scale * factor));
-  if (newScale === lightbox.scale) return;
-  // Keep the point under cursor fixed when focal coords are provided.
+  const next = clampScale(lightbox.scale * factor);
+  if (next === lightbox.scale) return;
   if (cx !== undefined && cy !== undefined) {
     const r = lightbox.stage.getBoundingClientRect();
-    const ax = cx - r.left - r.width / 2;
+    const ax = cx - r.left - r.width  / 2;
     const ay = cy - r.top  - r.height / 2;
-    const k = newScale / lightbox.scale;
+    const k  = next / lightbox.scale;
     lightbox.tx = ax - (ax - lightbox.tx) * k;
     lightbox.ty = ay - (ay - lightbox.ty) * k;
   }
-  lightbox.scale = newScale;
+  lightbox.scale = next;
   applyLightboxTransform();
 }
 
 document.querySelectorAll('[data-zoom]').forEach(btn => {
   btn.addEventListener('click', () => {
     const k = btn.dataset.zoom;
-    setLightboxSmooth(true);
-    if (k === 'in')        zoomBy(1.2);
-    else if (k === 'out')  zoomBy(1 / 1.2);
+    if (k === 'in')         zoomBy(LB_ZOOM_STEP);
+    else if (k === 'out')   zoomBy(1 / LB_ZOOM_STEP);
     else if (k === 'reset') fitLightbox();
   });
 });
 document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-theme')?.addEventListener('click', () => { toggleLightboxTheme(); });
 document.getElementById('lightbox-download').addEventListener('click', async () => {
   const svg = lightbox.canvas.querySelector('svg');
   if (!svg) return;
   const name = (lightbox.sourceTitle || 'diagram').replace(/\.(svg|png)$/i, '');
+  // downloadSvgAsPng sizes from viewBox (never touched by zoom), so the
+  // export is always the full diagram at native resolution.
   try {
     await downloadSvgAsPng(svg, `${name}.png`);
     showToast('PNG downloaded', 'success');
@@ -2018,7 +2409,7 @@ async function downloadSvgAsPng(svg, filename) {
     textEl.setAttribute('fill', color);
     textEl.setAttribute('font-size', String(fontSize));
     textEl.setAttribute('font-weight', fontWeight);
-    textEl.setAttribute('font-family', "Inter, system-ui, -apple-system, sans-serif");
+    textEl.setAttribute('font-family', 'Inter, system-ui, -apple-system, sans-serif');
     const lineHeight = fontSize * 1.2;
     const totalH = lineHeight * lines.length;
     const firstBaseline = foY + (foH - totalH) / 2 + fontSize;
@@ -2086,43 +2477,89 @@ lightbox.root.addEventListener('click', (e) => {
   if (e.target === lightbox.root) closeLightbox();
 });
 
-lightbox.stage.addEventListener('dblclick', () => {
-  setLightboxSmooth(true);
-  fitLightbox();
-});
+lightbox.stage.addEventListener('dblclick', fitLightbox);
 
-// Wheel zoom — normalizes across mouse wheels (large discrete ticks) and
-// trackpad pinch (small continuous deltas). Exponential mapping keeps in/out
-// symmetric; per-event step clamped to ±15% so a buffered burst can't warp.
+// Wheel zoom. Normalizes mouse wheels (discrete ticks) and trackpad pinch
+// (continuous, fires with ctrlKey). Exponential mapping keeps in/out
+// symmetric; per-event step clamped to ±15% to tame buffered bursts.
 {
   lightbox.stage.addEventListener('wheel', (e) => {
     e.preventDefault();
     let dy = e.deltaY;
-    if (e.deltaMode === 1)       dy *= 16;
-    else if (e.deltaMode === 2)  dy *= 400;
-    const isPinch = e.ctrlKey;
-    const sensitivity = isPinch ? 0.01 : 0.0007;
+    if (e.deltaMode === 1)      dy *= 16;   // lines → px
+    else if (e.deltaMode === 2) dy *= 400;  // pages → px
+    const sensitivity = e.ctrlKey ? 0.01 : 0.0007;
     const step = Math.max(-0.15, Math.min(0.15, -dy * sensitivity));
-    setLightboxSmooth(false);
     zoomBy(Math.exp(step), e.clientX, e.clientY);
   }, { passive: false });
 }
 
-// Lightbox pan via Pointer Events — unifies mouse, touch, and pen input.
+// Two-finger pinch-zoom. Midpoint stays under the fingers; finger drag
+// during the pinch translates the view.
 {
-  let panning = false, pointerId = 0, startX = 0, startY = 0, startTx = 0, startTy = 0;
+  let pinching = false;
+  let initDist = 0, initScale = 1;
+  let initMidX = 0, initMidY = 0;
+  let initTx = 0, initTy = 0;
+
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const mid  = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+
+  lightbox.stage.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2) return;
+    e.preventDefault();
+    pinching = true;
+    const [a, b] = e.touches;
+    initDist  = dist(a, b) || 1;
+    initScale = lightbox.scale;
+    const m   = mid(a, b);
+    initMidX  = m.x; initMidY = m.y;
+    initTx    = lightbox.tx; initTy = lightbox.ty;
+  }, { passive: false });
+
+  lightbox.stage.addEventListener('touchmove', (e) => {
+    if (!pinching || e.touches.length !== 2) return;
+    e.preventDefault();
+    const [a, b] = e.touches;
+    const m = mid(a, b);
+    const next = clampScale(initScale * ((dist(a, b) || 1) / initDist));
+
+    const r  = lightbox.stage.getBoundingClientRect();
+    const ax = initMidX - r.left - r.width  / 2;
+    const ay = initMidY - r.top  - r.height / 2;
+    const k  = next / initScale;
+    lightbox.tx = ax - (ax - initTx) * k + (m.x - initMidX);
+    lightbox.ty = ay - (ay - initTy) * k + (m.y - initMidY);
+    lightbox.scale = next;
+    applyLightboxTransform();
+  }, { passive: false });
+
+  const endPinch = () => { pinching = false; };
+  lightbox.stage.addEventListener('touchend', (e) => {
+    if (pinching && e.touches.length < 2) endPinch();
+  });
+  lightbox.stage.addEventListener('touchcancel', endPinch);
+
+  // Exposed so the pointer pan handler can yield during a pinch.
+  lightbox._isPinching = () => pinching;
+}
+
+// Pointer-based pan. Yields to pinch when the touch handler claims the gesture.
+{
+  let panning = false, pointerId = 0;
+  let startX = 0, startY = 0, startTx = 0, startTy = 0;
+
   lightbox.stage.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || lightbox._isPinching()) return;
     panning = true;
     pointerId = e.pointerId;
     startX = e.clientX; startY = e.clientY;
     startTx = lightbox.tx; startTy = lightbox.ty;
     try { lightbox.stage.setPointerCapture(pointerId); } catch {}
-    setLightboxSmooth(false);
     lightbox.stage.style.cursor = 'grabbing';
   });
   lightbox.stage.addEventListener('pointermove', (e) => {
-    if (!panning || e.pointerId !== pointerId) return;
+    if (!panning || e.pointerId !== pointerId || lightbox._isPinching()) return;
     lightbox.tx = startTx + (e.clientX - startX);
     lightbox.ty = startTy + (e.clientY - startY);
     applyLightboxTransform();
@@ -2135,21 +2572,29 @@ lightbox.stage.addEventListener('dblclick', () => {
   };
   lightbox.stage.addEventListener('pointerup', endPan);
   lightbox.stage.addEventListener('pointercancel', endPan);
-  window.addEventListener('blur', () => { if (panning) { panning = false; lightbox.stage.style.cursor = ''; } });
+  // Release the pan if focus leaves mid-drag (alt-tab, etc).
+  window.addEventListener('blur', () => {
+    if (panning) { panning = false; lightbox.stage.style.cursor = ''; }
+  });
 }
 
 document.addEventListener('keydown', (e) => {
   if (!lightbox.root.classList.contains('is-open')) return;
-  if (e.key === 'Escape')  { e.preventDefault(); closeLightbox(); return; }
-  setLightboxSmooth(true);
-  if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(1.2); }
-  if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomBy(1/1.2); }
-  if (e.key === '0')       { e.preventDefault(); fitLightbox(); }
-  const step = 60;
-  if (e.key === 'ArrowLeft')  { e.preventDefault(); lightbox.tx += step; applyLightboxTransform(); }
-  if (e.key === 'ArrowRight') { e.preventDefault(); lightbox.tx -= step; applyLightboxTransform(); }
-  if (e.key === 'ArrowUp')    { e.preventDefault(); lightbox.ty += step; applyLightboxTransform(); }
-  if (e.key === 'ArrowDown')  { e.preventDefault(); lightbox.ty -= step; applyLightboxTransform(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeLightbox(); return; }
+
+  const nudge = (dx, dy) => {
+    lightbox.tx += dx; lightbox.ty += dy;
+    applyLightboxTransform();
+  };
+  switch (e.key) {
+    case '+': case '=': e.preventDefault(); zoomBy(LB_ZOOM_STEP); break;
+    case '-': case '_': e.preventDefault(); zoomBy(1 / LB_ZOOM_STEP); break;
+    case '0':           e.preventDefault(); fitLightbox(); break;
+    case 'ArrowLeft':   e.preventDefault(); nudge( LB_ARROW_PAN, 0); break;
+    case 'ArrowRight':  e.preventDefault(); nudge(-LB_ARROW_PAN, 0); break;
+    case 'ArrowUp':     e.preventDefault(); nudge(0,  LB_ARROW_PAN); break;
+    case 'ArrowDown':   e.preventDefault(); nudge(0, -LB_ARROW_PAN); break;
+  }
 });
 
 window.addEventListener('resize', () => {
@@ -2524,6 +2969,16 @@ function syncEditorMirror() {
   for (let i = 0; i < kids.length; i++) tops[i] = kids[i].offsetTop;
   lineTops = tops;
   mirrorTotalHeight = editorMirror.offsetHeight;
+  // Mirror was rebuilt — re-sync its translateY so highlights don't snap
+  // back to the top of the textarea.
+  syncEditorMirrorScroll();
+  if (isFindBarOpen()) {
+    const q = document.getElementById('find-input')?.value || '';
+    const re = q ? buildFindRegex(q) : null;
+    if (re) _findState.editorMarks = highlightInEditorMirror(re);
+    const active = _findState.editorMarks?.[_findState.index];
+    if (active) active.classList.add('editor-hl--active');
+  }
 }
 
 function editorTopOfLine(line) {
@@ -2671,6 +3126,13 @@ function syncGutterToEditor() {
   if (inner) inner.style.transform = `translate3d(0, ${-editor.scrollTop}px, 0)`;
 }
 
+// Keep the overlay mirror in lock-step with the textarea. Mirror sits at
+// top:0; we simulate scrollTop via a negative translateY.
+function syncEditorMirrorScroll() {
+  if (!editorMirror) return;
+  editorMirror.style.transform = `translate3d(0, ${-editor.scrollTop}px, 0)`;
+}
+
 // rAF-batched so native momentum scrolling on one pane doesn't starve the
 // main thread with per-event layout work on the other.
 let _editorSyncQueued = false;
@@ -2708,6 +3170,7 @@ function schedulePreviewToEditor() {
 
 editor.addEventListener('scroll', () => {
   syncGutterToEditor();
+  syncEditorMirrorScroll();
   scheduleEditorToPreview();
   schedulePersistScroll();
 }, { passive: true });
@@ -3405,6 +3868,12 @@ function setView(view, silent = false) {
   // re-measure the mirror so line numbers align. This is the key fix for
   // "line numbers disappear after switching to preview, reappear after edit".
   if (view === 'editor' || view === 'split') safeUpdateGutter();
+  // Pane switch changes which surface owns the find highlights — re-run.
+  if (isFindBarOpen()) {
+    const q = document.getElementById('find-input')?.value || '';
+    if (q) runFind(q);
+    else clearFindHighlight();
+  }
 }
 document.querySelectorAll('.segmented__item[data-view]').forEach(btn => {
   btn.addEventListener('click', () => setView(btn.dataset.view));
@@ -3698,10 +4167,39 @@ async function handleAction(action) {
 }
 
 async function copyToClipboard(text) {
+  const str = text == null ? '' : String(text);
+
+  // Modern API. Fails with NotAllowedError when focus was lost between
+  // the user gesture and this await, or in insecure contexts.
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(str);
+      return true;
+    } catch (err) {
+      console.warn('navigator.clipboard.writeText failed, falling back:', err);
+    }
+  }
+
+  // Fallback: hidden textarea + execCommand. Works in a user gesture even
+  // when the document lost focus or the clipboard API is unavailable.
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = str;
+    ta.setAttribute('readonly', '');
+    ta.setAttribute('aria-hidden', 'true');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(ta);
+    const prevActive = document.activeElement;
+    ta.select();
+    ta.setSelectionRange(0, str.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (prevActive && typeof prevActive.focus === 'function') {
+      try { prevActive.focus({ preventScroll: true }); } catch {}
+    }
+    return ok;
+  } catch (err) {
+    console.warn('execCommand copy fallback failed:', err);
     return false;
   }
 }
@@ -4062,14 +4560,37 @@ function clearDoc() {
 }
 
 let _findBarBuilt = false;
+// Cap total matches to guard against catastrophic regex (e.g. `.*`) on a
+// multi-MB doc. Shared by source, preview, and mirror scans.
+const FIND_CAP = 5000;
 let _findState = {
+  // Source-side match list (authoritative). `index` points into this.
+  // Each entry: { start, end, previewMark, hiddenIn } where previewMark
+  // is the <mark> wrapper in the preview — or null when the match sits
+  // inside a hidden region (mermaid fence, raw HTML, comment, math).
   matches: [],
+  previewMarks: [], // flat list of <mark> wrappers, for bulk clear
+  editorMarks: [],  // <span.editor-hl> overlays in the mirror, parallel to matches
   index: -1,
   caseSensitive: false,
   regex: false,
   wholeWord: false,
   replaceMode: false,
 };
+
+function isFindBarOpen() {
+  return !!document.getElementById('find-bar')?.classList.contains('is-open');
+}
+
+// Preview is visible in every view except editor-only.
+function isPreviewVisibleForFind() {
+  const v = document.getElementById('panes')?.dataset?.view;
+  return v !== 'editor';
+}
+function isEditorVisibleForFind() {
+  const v = document.getElementById('panes')?.dataset?.view;
+  return v !== 'preview';
+}
 
 function ensureFindBar() {
   if (_findBarBuilt) return;
@@ -4080,44 +4601,60 @@ function ensureFindBar() {
   bar.setAttribute('role', 'search');
   bar.setAttribute('aria-label', 'Find and replace');
   bar.innerHTML = `
-    <div class="find-bar__row">
-      <div class="find-bar__field">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" class="find-bar__input" id="find-input" placeholder="Find" aria-label="Find" spellcheck="false" autocomplete="off" />
-        <span class="find-bar__count" id="find-count">0 / 0</span>
+    <button type="button" class="find-bar__expand" data-find-action="toggle-replace" aria-label="Toggle replace" aria-expanded="false" title="Toggle replace (Ctrl/Cmd+H)">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg>
+    </button>
+    <div class="find-bar__rows">
+      <div class="find-bar__row">
+        <div class="find-bar__field">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" class="find-bar__input" id="find-input" placeholder="Find" aria-label="Find" spellcheck="false" autocomplete="off" />
+          <span class="find-bar__count" id="find-count" aria-live="polite" aria-atomic="true">0 / 0</span>
+        </div>
+        <div class="find-bar__toggles" role="group" aria-label="Search options">
+          <button type="button" class="find-bar__toggle" data-find-toggle="case" aria-pressed="false" title="Match case (Alt+C)">Aa</button>
+          <button type="button" class="find-bar__toggle" data-find-toggle="word" aria-pressed="false" title="Whole word (Alt+W)">W</button>
+          <button type="button" class="find-bar__toggle" data-find-toggle="regex" aria-pressed="false" title="Regular expression (Alt+R)">.*</button>
+        </div>
+        <div class="find-bar__controls">
+          <button type="button" class="find-bar__btn" data-find-action="prev" aria-label="Previous match" title="Previous (Shift+Enter)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="18 15 12 9 6 15"/></svg>
+          </button>
+          <button type="button" class="find-bar__btn" data-find-action="next" aria-label="Next match" title="Next (Enter)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <button type="button" class="find-bar__btn find-bar__close" data-find-action="close" aria-label="Close find bar" title="Close (Esc)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="find-bar__toggles" role="group" aria-label="Search options">
-        <button type="button" class="find-bar__toggle" data-find-toggle="case" aria-pressed="false" title="Match case (Alt+C)">Aa</button>
-        <button type="button" class="find-bar__toggle" data-find-toggle="word" aria-pressed="false" title="Whole word (Alt+W)">W</button>
-        <button type="button" class="find-bar__toggle" data-find-toggle="regex" aria-pressed="false" title="Regular expression (Alt+R)">.*</button>
+      <div class="find-bar__row find-bar__row--replace">
+        <div class="find-bar__field">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 7 13 15 9 11"/></svg>
+          <input type="text" class="find-bar__input" id="find-replace-input" placeholder="Replace" aria-label="Replace" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="find-bar__controls">
+          <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace" title="Replace (Enter)">Replace</button>
+          <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace-all" title="Replace all (Ctrl/Cmd+Enter)">Replace all</button>
+        </div>
       </div>
-      <div class="find-bar__controls">
-        <button type="button" class="find-bar__btn" data-find-action="prev" aria-label="Previous match" title="Previous (Shift+Enter)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="18 15 12 9 6 15"/></svg>
-        </button>
-        <button type="button" class="find-bar__btn" data-find-action="next" aria-label="Next match" title="Next (Enter)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <button type="button" class="find-bar__btn" data-find-action="toggle-replace" aria-label="Toggle replace" title="Toggle replace">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 7 13 15 9 11"/><polyline points="3 17 3 21 7 21"/></svg>
-        </button>
-        <button type="button" class="find-bar__btn find-bar__close" data-find-action="close" aria-label="Close find bar" title="Close (Esc)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="find-bar__row find-bar__row--replace">
-      <div class="find-bar__field">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 7 13 15 9 11"/></svg>
-        <input type="text" class="find-bar__input" id="find-replace-input" placeholder="Replace" aria-label="Replace" spellcheck="false" autocomplete="off" />
-      </div>
-      <div class="find-bar__controls">
-        <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace">Replace</button>
-        <button type="button" class="find-bar__btn find-bar__btn--text" data-find-action="replace-all">Replace all</button>
+      <div class="find-bar__hint" id="find-hidden-hint" role="status" aria-live="polite">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span class="find-bar__hint-text"></span>
       </div>
     </div>
   `;
   document.body.appendChild(bar);
+
+  // Replace row animates open/closed via max-height + opacity. `inert`
+  // keeps collapsed inputs off the tab order; syncReplaceToggleAria flips
+  // it alongside the is-replace class.
+  const replaceRow = bar.querySelector('.find-bar__row--replace');
+  if (replaceRow) replaceRow.inert = true;
 
   const input = bar.querySelector('#find-input');
   const replaceInput = bar.querySelector('#find-replace-input');
@@ -4164,6 +4701,7 @@ function openFindBar({ replace = false } = {}) {
   const input = document.getElementById('find-input');
   _findState.replaceMode = !!replace;
   bar.classList.toggle('is-replace', _findState.replaceMode);
+  syncReplaceToggleAria();
   bar.classList.add('is-open');
   const selection = editor.value.slice(editor.selectionStart, editor.selectionEnd);
   if (selection && !selection.includes('\n')) {
@@ -4179,9 +4717,12 @@ function closeFindBar() {
   if (!bar) return;
   bar.classList.remove('is-open');
   _findState.matches = [];
+  _findState.previewMarks = [];
+  _findState.editorMarks = [];
   _findState.index = -1;
-  updateFindCount();
   clearFindHighlight();
+  updateFindHint(null);
+  updateFindCount();
   editor.focus();
 }
 
@@ -4189,9 +4730,21 @@ function toggleReplaceMode() {
   _findState.replaceMode = !_findState.replaceMode;
   const bar = document.getElementById('find-bar');
   bar?.classList.toggle('is-replace', _findState.replaceMode);
+  syncReplaceToggleAria();
   if (_findState.replaceMode) {
     document.getElementById('find-replace-input')?.focus();
+  } else {
+    // Pull focus back so repeated toggles don't strand it on a hidden button.
+    document.getElementById('find-input')?.focus();
   }
+}
+
+// Keep aria-expanded + inert aligned with the is-replace class.
+function syncReplaceToggleAria() {
+  const btn = document.querySelector('.find-bar__expand');
+  btn?.setAttribute('aria-expanded', String(_findState.replaceMode));
+  const replaceRow = document.querySelector('.find-bar__row--replace');
+  if (replaceRow) replaceRow.inert = !_findState.replaceMode;
 }
 
 function toggleFindOption(name) {
@@ -4225,83 +4778,532 @@ function buildFindRegex(query) {
 }
 
 function runFind(query) {
-  const re = buildFindRegex(query);
+  // Clean slate — avoid double-wrapping and stale --active classes.
+  clearFindHighlight();
   _findState.matches = [];
-  if (!re) { _findState.index = -1; updateFindCount(true); clearFindHighlight(); return; }
-  const src = editor.value;
-  let m;
-  while ((m = re.exec(src)) !== null) {
-    if (m[0].length === 0) { re.lastIndex++; continue; }
-    _findState.matches.push({ start: m.index, end: m.index + m[0].length });
-    if (_findState.matches.length > 5000) break;
+  _findState.previewMarks = [];
+  _findState.editorMarks = [];
+
+  const re = buildFindRegex(query);
+  if (!re) {
+    _findState.index = -1;
+    updateFindCount(!!query);
+    return;
   }
+
+  // Source scan is authoritative. Fresh regex instance — g-flag carries
+  // lastIndex across calls.
+  const src = editor.value;
+  const srcRe = new RegExp(re.source, re.flags);
+  let m;
+  while ((m = srcRe.exec(src)) !== null) {
+    if (m[0].length === 0) { srcRe.lastIndex++; continue; }
+    _findState.matches.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      previewMark: null,
+      hiddenIn: null,
+    });
+    if (_findState.matches.length >= FIND_CAP) break;
+  }
+
+  const previewVisible = isPreviewVisibleForFind();
+  if (previewVisible) {
+    _findState.previewMarks = highlightInPreview(new RegExp(re.source, re.flags));
+    // Source-match order and preview-mark order both follow document order.
+    // Walk in lockstep, tagging source matches that fall inside hidden
+    // regions (mermaid / raw HTML / comment / math) instead of a <mark>.
+    const hidden = computePreviewHiddenRanges(src);
+    let pi = 0;
+    for (const match of _findState.matches) {
+      const containing = hidden.length ? findContainingRange(match.start, hidden) : null;
+      if (containing) {
+        match.hiddenIn = containing;
+        continue;
+      }
+      if (pi >= _findState.previewMarks.length) break;
+      match.previewMark = _findState.previewMarks[pi++];
+    }
+  }
+
+  const editorVisible = isEditorVisibleForFind();
+  if (editorVisible) {
+    _findState.editorMarks = highlightInEditorMirror(new RegExp(re.source, re.flags));
+  }
+
   if (_findState.matches.length === 0) {
     _findState.index = -1;
     updateFindCount();
-    clearFindHighlight();
     return;
   }
-  const caret = editor.selectionStart;
-  let idx = _findState.matches.findIndex(m => m.start >= caret);
-  if (idx === -1) idx = 0;
-  _findState.index = idx;
+
+  // Initial active match: first at/after caret when editor is visible;
+  // first preview-visible match below viewport top in preview-only view.
+  if (editorVisible) {
+    const caret = editor.selectionStart;
+    let idx = _findState.matches.findIndex(mm => mm.start >= caret);
+    if (idx === -1) idx = 0;
+    _findState.index = idx;
+  } else if (previewWrap) {
+    const threshold = previewWrap.getBoundingClientRect().top + 4;
+    let idx = _findState.matches.findIndex(mm =>
+      mm.previewMark && mm.previewMark.getBoundingClientRect().top >= threshold
+    );
+    if (idx === -1) idx = _findState.matches.findIndex(mm => !!mm.previewMark);
+    if (idx === -1) idx = 0;
+    _findState.index = idx;
+  } else {
+    _findState.index = 0;
+  }
+
   updateFindCount();
   scrollToCurrentMatch();
 }
 
+// Source ranges that produce no rendered preview text. Typed so the UI
+// can explain WHY a match isn't visible and — for mermaid/katex — locate
+// the corresponding element in the preview DOM.
+function computePreviewHiddenRanges(src) {
+  const ranges = [];
+  let m;
+
+  // Fenced mermaid blocks. mermaidIdx maps to the Nth `.mermaid` in preview.
+  const mermaidRe = /^([`~]{3,})[ \t]*mermaid\b[^\n]*\n[\s\S]*?\n\1[ \t]*$/gm;
+  let mermaidIdx = 0;
+  while ((m = mermaidRe.exec(src)) !== null) {
+    ranges.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      type: 'mermaid',
+      mermaidIdx: mermaidIdx++,
+    });
+  }
+
+  // Raw HTML blocks with no rendered text.
+  const rawRe = /<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+  while ((m = rawRe.exec(src)) !== null) {
+    ranges.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      type: 'rawhtml',
+      tag: m[1].toLowerCase(),
+    });
+  }
+
+  // HTML comments — sanitized out of preview.
+  const cmtRe = /<!--[\s\S]*?-->/g;
+  while ((m = cmtRe.exec(src)) !== null) {
+    ranges.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      type: 'comment',
+    });
+  }
+
+  // Math regions from the last render. Matches inside $…$ / $$…$$ can't
+  // be wrapped in preview (the walker rejects .katex), so treat them as
+  // hidden: scroll to the Nth .katex span and show the "inside math" hint.
+  if (_lastMathSrc === src) {
+    let katexIdx = 0;
+    for (const r of _lastMathRanges) {
+      ranges.push({
+        start: r.start,
+        end: r.end,
+        type: 'katex',
+        katexIdx: katexIdx++,
+        display: r.display,
+      });
+    }
+  }
+
+  return ranges;
+}
+
+// Linear scan — FIND_CAP bounds the hit count and real docs have < 20 ranges.
+function findContainingRange(offset, ranges) {
+  for (const r of ranges) {
+    if (offset >= r.start && offset < r.end) return r;
+  }
+  return null;
+}
+
 function gotoMatch(dir) {
-  if (_findState.matches.length === 0) return;
-  _findState.index = (_findState.index + dir + _findState.matches.length) % _findState.matches.length;
+  const total = _findState.matches.length;
+  if (total === 0) return;
+  _findState.index = (_findState.index + dir + total) % total;
   updateFindCount();
   scrollToCurrentMatch();
 }
 
 function scrollToCurrentMatch() {
-  const m = _findState.matches[_findState.index];
-  if (!m) return;
-  editor.focus();
+  const active = _findState.matches[_findState.index];
+  if (!active) { updateFindHint(null); return; }
+  const previewVisible = isPreviewVisibleForFind();
+  const editorVisible = isEditorVisibleForFind();
+
+  // Editor mirror: clear all --active, activate the current one. The
+  // scan may have been capped, so editorMarks[index] can be undefined.
+  if (editorVisible && _findState.editorMarks.length > 0) {
+    for (const sp of _findState.editorMarks) sp.classList.remove('editor-hl--active');
+    _findState.editorMarks[_findState.index]?.classList.add('editor-hl--active');
+  }
+
+  // Preview: clear --active, then one of three paths:
+  //   1. Match has a <mark>        -> scroll + activate it.
+  //   2. Match is in mermaid/katex -> scroll to the corresponding diagram.
+  //   3. Match is in script/comment -> interpolate between neighbours.
+  // The hint row only appears in preview-only view; split/editor already
+  // show the match in the mirror, so the hint would be noise.
+  if (previewVisible) {
+    for (const mk of _findState.previewMarks) mk.classList.remove('find-match--active');
+    if (active.previewMark) {
+      scrollPreviewToElement(active.previewMark, true);
+      updateFindHint(null);
+    } else if (active.hiddenIn) {
+      const target = resolveHiddenPreviewTarget(active);
+      if (target instanceof Element) scrollPreviewToElement(target, false);
+      else if (typeof target === 'number' && previewWrap) {
+        try { takeScroll('preview'); } catch {}
+        const max = Math.max(0, previewWrap.scrollHeight - previewWrap.clientHeight);
+        previewWrap.scrollTop = Math.max(0, Math.min(max, target));
+      }
+      updateFindHint(editorVisible ? null : active.hiddenIn);
+    } else {
+      updateFindHint(null);
+    }
+  } else {
+    updateFindHint(null);
+  }
+
+  // Always mirror the active match in the textarea selection so the caret
+  // lands correctly when the find bar closes. Don't focus() — that would
+  // steal from the find input.
   try {
-    editor.selectionStart = m.start;
-    editor.selectionEnd = m.end;
+    editor.selectionStart = active.start;
+    editor.selectionEnd = active.end;
   } catch {}
-  const line = editor.value.slice(0, m.start).split('\n').length - 1;
-  const targetTop = Math.max(0, (lineTops[line] ?? 0) - 120);
-  editor.scrollTop = targetTop;
-  syncGutterToEditor();
+
+  if (editorVisible) {
+    const line = editor.value.slice(0, active.start).split('\n').length - 1;
+    const targetTop = Math.max(0, (lineTops[line] ?? 0) - 120);
+    try { takeScroll('editor'); } catch {}
+    editor.scrollTop = targetTop;
+    syncGutterToEditor();
+    syncEditorMirrorScroll();
+  }
 }
 
-function clearFindHighlight() {}
+// Centre `el` inside previewWrap via manual scrollTop math (scrollIntoView
+// also scrolls body on some browsers). `activate` toggles .find-match--active
+// for <mark> targets and is skipped for mermaid/katex containers.
+function scrollPreviewToElement(el, activate) {
+  if (!previewWrap || !el) return;
+  if (activate && el.classList.contains('find-match')) {
+    el.classList.add('find-match--active');
+  }
+  const wrapRect = previewWrap.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const offset = elRect.top - wrapRect.top;
+  const centerAdjust = wrapRect.height / 2 - elRect.height / 2;
+  const target = previewWrap.scrollTop + offset - centerAdjust;
+  const max = Math.max(0, previewWrap.scrollHeight - previewWrap.clientHeight);
+  try { takeScroll('preview'); } catch {}
+  previewWrap.scrollTop = Math.max(0, Math.min(max, target));
+}
+
+// Resolve the preview scroll target for a hidden match:
+//   - Mermaid/KaTeX: the Nth element of that type (Element).
+//   - Script/comment: interpolated between visible neighbours (number).
+//   - None available: null.
+function resolveHiddenPreviewTarget(match) {
+  if (!previewWrap) return null;
+
+  if (match.hiddenIn?.type === 'mermaid') {
+    const nodes = preview?.querySelectorAll('.mermaid');
+    if (nodes && nodes[match.hiddenIn.mermaidIdx]) return nodes[match.hiddenIn.mermaidIdx];
+    // Not rendered yet — fall through to neighbour interpolation.
+  }
+
+  if (match.hiddenIn?.type === 'katex') {
+    // .katex = success, .katex-error = parse failure. Both appear in
+    // document order, one per source math region.
+    const nodes = preview?.querySelectorAll('.katex, .katex-error');
+    if (nodes && nodes[match.hiddenIn.katexIdx]) return nodes[match.hiddenIn.katexIdx];
+  }
+
+  // Nearest visible neighbours by source offset.
+  const matches = _findState.matches;
+  const i = _findState.index;
+  let before = null;
+  for (let j = i - 1; j >= 0; j--) {
+    if (matches[j].previewMark) { before = matches[j]; break; }
+  }
+  let after = null;
+  for (let j = i + 1; j < matches.length; j++) {
+    if (matches[j].previewMark) { after = matches[j]; break; }
+  }
+
+  const wrapRect = previewWrap.getBoundingClientRect();
+  const scrollTopOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return previewWrap.scrollTop + (r.top - wrapRect.top) - (wrapRect.height / 2);
+  };
+
+  if (before && after) {
+    const y1 = scrollTopOf(before.previewMark);
+    const y2 = scrollTopOf(after.previewMark);
+    const span = (after.start - before.start) || 1;
+    const frac = (match.start - before.start) / span;
+    return y1 + frac * (y2 - y1);
+  }
+  if (before) return scrollTopOf(before.previewMark);
+  if (after) return scrollTopOf(after.previewMark);
+  return null;
+}
+
+// Show/hide the "hidden in preview" hint row. Only relevant in preview-only
+// view — when editor/mirror is visible, the mirror already shows the match.
+function updateFindHint(hiddenIn) {
+  const hint = document.getElementById('find-hidden-hint');
+  if (!hint) return;
+  if (!hiddenIn) {
+    hint.classList.remove('is-visible');
+    return;
+  }
+  const label = hint.querySelector('.find-bar__hint-text');
+  if (label) {
+    const where = hiddenIn.type === 'mermaid'
+      ? 'a Mermaid diagram'
+      : hiddenIn.type === 'katex'
+        ? 'a math expression'
+        : hiddenIn.type === 'rawhtml'
+          ? `a <${hiddenIn.tag}> block`
+          : 'an HTML comment';
+    label.textContent = `Match is inside ${where}. Switch to editor or split view to see it.`;
+  }
+  hint.classList.add('is-visible');
+}
+
+// Shared core for both highlighters. Scans `text` for `re`, builds a
+// fragment interleaving plain text with wrapper elements, and appends
+// each wrapper to `collector`. Returns { frag, capReached } — `frag` is
+// null when `text` had no matches.
+function buildHighlightFragment(text, re, makeWrapper, collector) {
+  const localRe = new RegExp(re.source, re.flags);
+  const ranges = [];
+  let m;
+  while ((m = localRe.exec(text)) !== null) {
+    if (m[0].length === 0) { localRe.lastIndex++; continue; }
+    ranges.push({ start: m.index, end: m.index + m[0].length });
+    if (collector.length + ranges.length >= FIND_CAP) break;
+  }
+  if (ranges.length === 0) return { frag: null, capReached: false };
+
+  const frag = document.createDocumentFragment();
+  let cursor = 0;
+  for (const r of ranges) {
+    if (r.start > cursor) {
+      frag.appendChild(document.createTextNode(text.slice(cursor, r.start)));
+    }
+    const el = makeWrapper(text.slice(r.start, r.end));
+    frag.appendChild(el);
+    collector.push(el);
+    cursor = r.end;
+  }
+  if (cursor < text.length) {
+    frag.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+  return { frag, capReached: collector.length >= FIND_CAP };
+}
+
+// Wrap regex hits in the preview with <mark class="find-match">.
+// Skips non-rendering containers (script/style/noscript), SVG (breaks
+// Mermaid), KaTeX (htmlAndMathml emits duplicate MathML + HTML text per
+// source token — wrapping would over-generate marks and misalign the zip),
+// and existing find-match wrappers.
+function highlightInPreview(re) {
+  if (!preview) return [];
+  const marks = [];
+  const textNodes = [];
+  const walker = document.createTreeWalker(
+    preview,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const val = node.nodeValue;
+        if (!val || !val.length) return NodeFilter.FILTER_REJECT;
+        if (!/\S/.test(val)) return NodeFilter.FILTER_REJECT;
+        let p = node.parentNode;
+        while (p && p !== preview) {
+          if (p.nodeType === 1) {
+            const tag = p.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+            if (p.namespaceURI === 'http://www.w3.org/2000/svg') return NodeFilter.FILTER_REJECT;
+            if (p.classList) {
+              if (p.classList.contains('find-match')) return NodeFilter.FILTER_REJECT;
+              if (p.classList.contains('katex')) return NodeFilter.FILTER_REJECT;
+              if (p.classList.contains('katex-error')) return NodeFilter.FILTER_REJECT;
+            }
+          }
+          p = p.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+  // Collect up-front — mutating during the walk invalidates the cursor.
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  const makeMark = (matched) => {
+    const mark = document.createElement('mark');
+    mark.className = 'find-match';
+    mark.textContent = matched;
+    return mark;
+  };
+
+  for (const node of textNodes) {
+    const { frag, capReached } = buildHighlightFragment(node.nodeValue, re, makeMark, marks);
+    if (frag) node.parentNode?.replaceChild(frag, node);
+    if (capReached) break;
+  }
+  return marks;
+}
+
+// Paint find-match overlays into the editor mirror. Mirror holds one
+// <div> per source line. Returned spans are in document order so that
+// editorMarks[i] aligns with _findState.matches[i].
+function highlightInEditorMirror(re) {
+  if (!editorMirror) return [];
+  clearEditorMirrorHighlights();
+
+  const lines = editor.value.split('\n');
+  const lineDivs = editorMirror.children;
+  // The mirror must already be rebuilt against the current source.
+  if (lineDivs.length !== lines.length) return [];
+
+  const spans = [];
+  const makeSpan = (matched) => {
+    const span = document.createElement('span');
+    span.className = 'editor-hl';
+    span.textContent = matched;
+    return span;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (!text) continue;
+    const { frag, capReached } = buildHighlightFragment(text, re, makeSpan, spans);
+    if (frag) lineDivs[i].replaceChildren(frag);
+    if (capReached) break;
+  }
+  return spans;
+}
+
+function clearFindHighlight() {
+  clearPreviewHighlights();
+  clearEditorMirrorHighlights();
+}
+
+// Unwrap all `selector` elements under `root`, moving their children up
+// and re-joining split text nodes.
+function unwrapMatches(root, selector) {
+  const nodes = root.querySelectorAll(selector);
+  if (nodes.length === 0) return;
+  const parents = new Set();
+  nodes.forEach(node => {
+    const parent = node.parentNode;
+    if (!parent) return;
+    while (node.firstChild) parent.insertBefore(node.firstChild, node);
+    parent.removeChild(node);
+    parents.add(parent);
+  });
+  parents.forEach(p => { try { p.normalize(); } catch {} });
+}
+
+function clearPreviewHighlights() {
+  if (!preview) return;
+  unwrapMatches(preview, 'mark.find-match');
+  _findState.previewMarks = [];
+}
+
+function clearEditorMirrorHighlights() {
+  if (!editorMirror) return;
+  unwrapMatches(editorMirror, '.editor-hl');
+  _findState.editorMarks = [];
+}
 
 function updateFindCount(invalid = false) {
   const label = document.getElementById('find-count');
   const input = document.getElementById('find-input');
   if (!label || !input) return;
   const q = input.value;
-  if (!q) { label.textContent = '0 / 0'; input.classList.remove('is-invalid', 'is-no-match'); return; }
-  if (invalid) { label.textContent = '\u2014'; input.classList.add('is-invalid'); input.classList.remove('is-no-match'); return; }
+  if (!q) {
+    label.textContent = '0 / 0';
+    input.classList.remove('is-invalid', 'is-no-match');
+    updateFindHint(null);
+    return;
+  }
+  if (invalid) {
+    label.textContent = '\u2014';
+    input.classList.add('is-invalid');
+    input.classList.remove('is-no-match');
+    updateFindHint(null);
+    return;
+  }
+  // Source count is the true count; the hint row (not the count) flags
+  // matches inside hidden regions.
   const n = _findState.matches.length;
   label.textContent = n === 0 ? '0 / 0' : `${_findState.index + 1} / ${n}`;
   input.classList.remove('is-invalid');
   input.classList.toggle('is-no-match', n === 0);
+  if (n === 0) updateFindHint(null);
+}
+
+// Clear highlights + match state. Called after a replace or any edit —
+// runFind() would paint stale DOM before render() settles; render's hook
+// re-runs find once the preview is fresh.
+function resetFindAfterEdit() {
+  clearFindHighlight();
+  _findState.matches = [];
+  _findState.previewMarks = [];
+  _findState.editorMarks = [];
+  _findState.index = -1;
+  updateFindCount();
 }
 
 function replaceCurrent() {
-  if (_findState.matches.length === 0 || _findState.index < 0) return;
-  const replaceInput = document.getElementById('find-replace-input');
-  const replacement = replaceInput?.value ?? '';
+  if (_findState.matches.length === 0) return;
   const m = _findState.matches[_findState.index];
-  const newValue = editor.value.slice(0, m.start) + replacement + editor.value.slice(m.end);
-  const cursor = m.start + replacement.length;
-  editor.value = newValue;
-  try { editor.selectionStart = editor.selectionEnd = cursor; } catch {}
-  editor.dispatchEvent(new Event('input'));
-  const prevIndex = _findState.index;
-  runFind(document.getElementById('find-input').value);
-  if (_findState.matches.length > 0) {
-    _findState.index = Math.min(prevIndex, _findState.matches.length - 1);
-    updateFindCount();
-    scrollToCurrentMatch();
+  if (!m) return;
+  const replacement = document.getElementById('find-replace-input')?.value ?? '';
+
+  // Noop replacement (target text already equals replacement): advance
+  // instead so repeated clicks don't feel dead.
+  if (editor.value.slice(m.start, m.end) === replacement) { gotoMatch(1); return; }
+
+  // Prefer execCommand('insertText') so the edit lands on the native
+  // undo stack. It's deprecated but still the only pre-InputEvent API
+  // that reliably preserves undo on textareas. Falls back to a direct
+  // value assignment if blocked (which breaks undo).
+  const prevFocus = document.activeElement;
+  let ok = false;
+  try {
+    editor.focus();
+    editor.setSelectionRange(m.start, m.end);
+    ok = document.execCommand('insertText', false, replacement);
+  } catch { ok = false; }
+
+  if (!ok) {
+    const oldValue = editor.value;
+    editor.value = oldValue.slice(0, m.start) + replacement + oldValue.slice(m.end);
+    const cursor = m.start + replacement.length;
+    try { editor.selectionStart = editor.selectionEnd = cursor; } catch {}
+    editor.dispatchEvent(new Event('input'));
   }
+
+  // Restore focus so the user can keep hammering Enter in the replace input.
+  if (prevFocus && prevFocus !== editor) { try { prevFocus.focus(); } catch {} }
+  resetFindAfterEdit();
 }
 
 function replaceAll() {
@@ -4310,14 +5312,36 @@ function replaceAll() {
   const rawReplacement = document.getElementById('find-replace-input')?.value ?? '';
   const re = buildFindRegex(q);
   if (!re) return;
-  // Literal mode: escape $ so $&, $1, $$ aren't treated as regex replacement tokens.
+  // Literal mode: escape `$` so `$&`, `$1`, `$$` aren't read as tokens.
   const replacement = _findState.regex ? rawReplacement : rawReplacement.replace(/\$/g, '$$$$');
   const count = _findState.matches.length;
-  const newValue = editor.value.replace(re, replacement);
-  editor.value = newValue;
-  editor.dispatchEvent(new Event('input'));
-  runFind(q);
-  showToast(`Replaced ${count} occurrence${count === 1 ? '' : 's'}`, 'success');
+  const oldValue = editor.value;
+  const newValue = oldValue.replace(re, replacement);
+  const toastMsg = `Replaced ${count} occurrence${count === 1 ? '' : 's'}`;
+  if (newValue === oldValue) {
+    // Self-replacement — doc unchanged, keep state intact.
+    showToast(toastMsg, 'success');
+    return;
+  }
+
+  // Select-all + insertText so the whole replace is a single undo entry.
+  // Direct value assignment would break undo.
+  const prevFocus = document.activeElement;
+  let ok = false;
+  try {
+    editor.focus();
+    editor.setSelectionRange(0, oldValue.length);
+    ok = document.execCommand('insertText', false, newValue);
+  } catch { ok = false; }
+
+  if (!ok) {
+    editor.value = newValue;
+    editor.dispatchEvent(new Event('input'));
+  }
+
+  if (prevFocus && prevFocus !== editor) { try { prevFocus.focus(); } catch {} }
+  resetFindAfterEdit();
+  showToast(toastMsg, 'success');
 }
 
 function registerKeyboardShortcuts() {
@@ -4334,6 +5358,8 @@ function registerKeyboardShortcuts() {
       if (findBar?.classList.contains('is-open')) {
         e.preventDefault(); closeFindBar(); return;
       }
+      // Lightbox handles its own Escape; don't also exit focus mode.
+      if (lightbox.root?.classList.contains('is-open')) return;
       if (document.body.classList.contains('is-focus')) { e.preventDefault(); exitFocus(); return; }
     }
 
@@ -4345,6 +5371,17 @@ function registerKeyboardShortcuts() {
       e.preventDefault();
       cycleTab(e.shiftKey ? -1 : 1);
       return;
+    }
+
+    // F3 / Cmd+G / Ctrl+G — next match (Shift = previous). Only active
+    // while the find bar is open; pass through otherwise.
+    if (e.key === 'F3' || ((e.metaKey || e.ctrlKey) && (e.key === 'g' || e.key === 'G') && !e.altKey)) {
+      if (isFindBarOpen()) {
+        e.preventDefault();
+        gotoMatch(e.shiftKey ? -1 : 1);
+        document.getElementById('find-input')?.focus();
+        return;
+      }
     }
 
     if (!(e.metaKey || e.ctrlKey)) return;

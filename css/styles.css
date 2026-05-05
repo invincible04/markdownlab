@@ -171,7 +171,7 @@ body > .statusbar { grid-row: 3; }
 }
 :root[data-theme='light'] .topbar::before { opacity: 0.18; }
 
-.topbar__brand { display: flex; align-items: center; gap: 12px; min-width: 0; position: relative; z-index: 1; }
+.topbar__brand { display: flex; align-items: center; gap: 12px; min-width: 0; overflow: hidden; position: relative; z-index: 1; }
 .topbar__logo {
   width: 32px; height: 32px; border-radius: 9px;
   display: grid; place-items: center;
@@ -194,6 +194,7 @@ body > .statusbar { grid-row: 3; }
    position:absolute and doesn't participate in flex layout. */
 .topbar__title {
   min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -212,6 +213,7 @@ body > .statusbar { grid-row: 3; }
 .topbar__subtitle {
   display: inline-flex; align-items: center; gap: 6px;
   margin: 0; font-size: 11px; color: var(--text-muted);
+  max-width: 100%;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .topbar__subtitle::before {
@@ -240,8 +242,8 @@ body > .statusbar { grid-row: 3; }
   color: var(--text-muted);
   opacity: 0.6;
 }
-.topbar__subtitle-state[data-state="dirty"] { color: var(--accent); }
-.topbar__subtitle-state[data-state="error"] { color: var(--danger, #ef4444); }
+.topbar__subtitle-state[data-state='dirty'] { color: var(--accent); }
+.topbar__subtitle-state[data-state='error'] { color: var(--danger, #ef4444); }
 @keyframes save-pulse {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent); }
   60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 0%, transparent); }
@@ -829,9 +831,11 @@ body.is-fs .pane__header { display: none; }
   }
 }
 
-/* Browsers paint default white over the fullscreen root — force our bg. */
+/* Force themed bg + text in fullscreen so Mermaid foreignObject labels
+   inherit the correct colour instead of the UA default. */
 body:fullscreen {
   background: var(--bg) !important;
+  color: var(--text);
   width: 100vw;
   height: 100vh;
   display: grid;
@@ -840,6 +844,7 @@ body:fullscreen {
 body:fullscreen::backdrop { background: var(--bg); }
 body:-webkit-full-screen {
   background: var(--bg) !important;
+  color: var(--text);
   width: 100vw;
   height: 100vh;
   display: grid;
@@ -1109,21 +1114,21 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   transition: color 120ms, background 120ms, border-color 120ms;
 }
 .pane__toggle:hover { color: var(--text); background: var(--bg-elev-3); }
-.pane__toggle[aria-pressed="true"] {
+.pane__toggle[aria-pressed='true'] {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 36%, transparent);
 }
-.pane__toggle[aria-pressed="true"]:hover {
+.pane__toggle[aria-pressed='true']:hover {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
-.pane__toggle[aria-pressed="false"] {
+.pane__toggle[aria-pressed='false'] {
   color: var(--text-muted);
   text-decoration: line-through;
   text-decoration-color: currentColor;
   text-decoration-thickness: 1px;
 }
-.pane__toggle[aria-pressed="false"] .pane__toggle-icon {
+.pane__toggle[aria-pressed='false'] .pane__toggle-icon {
   opacity: 0.6;
 }
 
@@ -1196,6 +1201,9 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  /* Surface owns the bg so the transparent textarea (z:1) reveals the
+     mirror's find-highlight spans painted at z:0. */
+  background: var(--surface);
 }
 .editor {
   appearance: none;
@@ -1205,7 +1213,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   font-family: var(--font-mono);
   font-size: 13px; line-height: 1.65;
   color: var(--text);
-  background: var(--surface);
+  background: transparent; /* see .editor__surface */
   border: 0; outline: 0; resize: none;
   padding: 16px 18px;
   tab-size: 2;
@@ -1218,8 +1226,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   z-index: 1;
 }
 .editor::placeholder { color: var(--text-dim); }
-/* Hidden mirror used by scroll sync to measure wrapped-line Y positions.
-   Must match the textarea's typography, padding, width, and wrap exactly. */
+/* Mirror doubles as measurement buffer for scroll-sync and as the
+   find-highlight overlay. Typography/padding/wrap must match the
+   textarea exactly. Text is transparent — only .editor-hl backgrounds
+   paint. Position synced with editor.scrollTop via translate3d. */
 .editor__mirror {
   position: absolute;
   top: 0; left: 0;
@@ -1232,12 +1242,22 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: break-word;
-  visibility: hidden;
+  color: transparent;
   pointer-events: none;
   z-index: 0;
+  will-change: transform;
 }
-.editor__mirror > div {
-  min-height: 1.65em;
+.editor__mirror > div { min-height: 1.65em; }
+/* Find-match highlights. Hue matches mark.find-match so both panes read
+   as one UI; inherited transparent text keeps the span invisible. */
+.editor__mirror .editor-hl {
+  background: color-mix(in srgb, var(--warning) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 50%, transparent);
+  border-radius: 2px;
+}
+.editor__mirror .editor-hl--active {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
 .preview__layout {
@@ -1332,10 +1352,16 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding: 12px 12px 16px 18px;
-  scroll-behavior: smooth;
+  /* Hide scrollbar — JS centre-follow drives scrollTo() directly.
+     No scroll-behavior to avoid double-smoothing. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  position: relative;
 }
+.toc__nav::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .toc__list {
   list-style: none;
   margin: 0;
@@ -1352,6 +1378,29 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   background: var(--border);
   border-radius: 1px;
 }
+
+/* Single sliding active-link indicator. Composited transform + height
+   glides between links in 300ms without overshoot. */
+.toc__indicator {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 2px;
+  height: 0;
+  background: linear-gradient(180deg, var(--accent-a), var(--accent-b));
+  border-radius: 2px;
+  transform: translateY(0);
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
+  transition:
+    transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    height 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms linear;
+  will-change: transform, height;
+}
+.toc__indicator.is-visible { opacity: 1; }
+
 .toc__item { margin: 0; }
 .toc__link {
   position: relative;
@@ -1367,12 +1416,12 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: color 160ms ease, background 160ms ease, border-left-color 160ms ease;
+  transition: color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 .toc__link:hover {
   color: var(--text);
   background: color-mix(in srgb, var(--text) 5%, transparent);
-  border-left-color: var(--border-strong);
+  transform: translateX(1px);
   text-decoration: none;
 }
 .toc__link:focus-visible {
@@ -1386,19 +1435,8 @@ body:has(.palette.is-open) .focus-dock { display: none; }
     linear-gradient(90deg,
       color-mix(in srgb, var(--accent) 18%, transparent),
       color-mix(in srgb, var(--accent) 6%, transparent));
-  border-left-color: var(--accent);
-}
-.toc__link.is-active::after {
-  content: '';
-  position: absolute;
-  left: -2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 16px;
-  background: linear-gradient(180deg, var(--accent-a), var(--accent-b));
-  border-radius: 2px;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+  /* Leave border-left-color alone — .toc__indicator is the sliding
+     active affordance, and a per-link border would fight its transition. */
 }
 .toc__link img,
 .toc__link .emoji {
@@ -1421,14 +1459,6 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   opacity: 0;
   overflow: hidden;
 }
-
-.toc__nav::-webkit-scrollbar { width: 6px; }
-.toc__nav::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border: 1px solid var(--bg-elev-1);
-  border-radius: 999px;
-}
-.toc__nav::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
 .panes[data-view='editor'] .toc { display: none; }
 
@@ -1546,7 +1576,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toc, .toc__link, .toc__nav, .toc-scrim { transition: none; scroll-behavior: auto; }
+  .toc, .toc__link, .toc__nav, .toc__indicator, .toc-scrim { transition: none; scroll-behavior: auto; }
 }
 .preview.is-reading {
   font-family: var(--font-read);
@@ -2096,57 +2126,68 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 .markdown-body .mermaid svg { max-width: 100%; height: auto; display: inline-block; }
 
-/* Gantt polish — Mermaid's default bars are washed-out on dark backgrounds. */
-:root[data-theme='dark'] .markdown-body .mermaid .task {
+/* Descender clip fix — Mermaid sizes each <foreignObject> tight to the
+   text baseline, so `y`, `p`, `q`, `g`, `j` tails render *below* the box
+   and get cropped. Letting the foreignObject overflow paints descenders
+   outside its bounds without shifting the label's centered position.
+   Applies to both preview and lightbox canvases. */
+:is(.markdown-body .mermaid, .lightbox__canvas) foreignObject {
+  overflow: visible;
+}
+
+/* Gantt polish — Mermaid's default bars are washed-out on dark backgrounds.
+   Selectors cover both the preview wrapper AND the lightbox canvas (which
+   clones the SVG out of preview). */
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .task {
   stroke-width: 1.25;
   rx: 4; ry: 4;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .taskText,
-:root[data-theme='dark'] .markdown-body .mermaid .taskTextOutsideRight,
-:root[data-theme='dark'] .markdown-body .mermaid .taskTextOutsideLeft {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskText,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskTextOutsideRight,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskTextOutsideLeft {
   fill: #f1f5f9 !important;
   font-weight: 500;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .sectionTitle {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .sectionTitle {
   fill: #f1f5f9 !important;
   font-weight: 600;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .grid .tick line {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .grid .tick line {
   stroke: #2d3548;
   stroke-opacity: 0.8;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .grid path { stroke: #3b4458; }
-:root[data-theme='dark'] .markdown-body .mermaid .tick text {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .grid path { stroke: #3b4458; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .tick text {
   fill: #94a3b8 !important;
   font-size: 10.5px;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .titleText { fill: #f8fafc !important; }
-:root[data-theme='dark'] .markdown-body .mermaid .today { stroke: #f87171; stroke-width: 2; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .titleText { fill: #f8fafc !important; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .today { stroke: #f87171; stroke-width: 2; }
 
 /* ER diagrams — Mermaid ships light attribute-row fills that make our
    near-white text invisible. Force dark row fills + bright attribute text. */
-:root[data-theme='dark'] .markdown-body .mermaid .er.entityBox {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.entityBox {
   fill: #059669;
   stroke: #6ee7b7;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .er.entityLabel {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.entityLabel {
   fill: #ffffff !important;
   font-weight: 600;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .er.attributeBoxOdd {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxOdd {
   fill: #1e2533 !important;
   stroke: #475569 !important;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .er.attributeBoxEven {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxEven {
   fill: #232a3d !important;
   stroke: #475569 !important;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .er.attributeBoxOdd text,
-:root[data-theme='dark'] .markdown-body .mermaid .er.attributeBoxEven text,
-:root[data-theme='dark'] .markdown-body .mermaid .er.relationshipLabel {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxOdd text,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxEven text,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.relationshipLabel {
   fill: #f1f5f9 !important;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .er.relationshipLabelBox {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.relationshipLabelBox {
   fill: #1e293b !important;
   stroke: none;
 }
@@ -2161,14 +2202,14 @@ body:has(.palette.is-open) .focus-dock { display: none; }
    (yet) annotated a node (e.g. during initial paint, or for state/sequence
    diagrams that don't emit .node wrappers). They use regular (non-important)
    declarations so the JS-set inline styles always win. */
-:root[data-theme='dark'] .markdown-body .mermaid g.stateGroup text,
-:root[data-theme='dark'] .markdown-body .mermaid g.stateGroup .state-title {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup text,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup .state-title {
   fill: #f8fafc;
 }
-:root[data-theme='dark'] .markdown-body .mermaid g.node:not([data-mdlab-contrast]) text,
-:root[data-theme='dark'] .markdown-body .mermaid g.node:not([data-mdlab-contrast]) .nodeLabel,
-:root[data-theme='dark'] .markdown-body .mermaid g.node:not([data-mdlab-contrast]) .label,
-:root[data-theme='dark'] .markdown-body .mermaid g.node:not([data-mdlab-contrast]) foreignObject div {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) text,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .nodeLabel,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .label,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) foreignObject div {
   fill: #f8fafc;
   color: #f8fafc;
 }
@@ -2176,15 +2217,15 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 /* Edge-label pill: slate-800 background + slate-100 text is 12.6:1 AA+.
    Fallback for unannotated labels; JS pass overrides with per-edge values
    when needed (edges inherit page bg). */
-:root[data-theme='dark'] .markdown-body .mermaid .edgeLabel:not([data-mdlab-contrast]),
-:root[data-theme='dark'] .markdown-body .mermaid .edgeLabel:not([data-mdlab-contrast]) rect,
-:root[data-theme='dark'] .markdown-body .mermaid .edgeLabel:not([data-mdlab-contrast]) foreignObject div {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]),
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) rect,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) foreignObject div {
   background-color: #1e293b;
   fill: #1e293b;
   color: #f1f5f9;
 }
-:root[data-theme='dark'] .markdown-body .mermaid .edgeLabel:not([data-mdlab-contrast]) span,
-:root[data-theme='dark'] .markdown-body .mermaid .edgeLabel:not([data-mdlab-contrast]) p {
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) span,
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) p {
   color: #f1f5f9;
   background: transparent;
 }
@@ -2210,13 +2251,108 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .diagram-expand:focus-visible { opacity: 1; }
 .diagram-expand:hover { color: var(--text); background: var(--bg-elev-3); border-color: var(--border-strong); transform: translateY(-1px); }
 .diagram-expand:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+/* Mermaid parse-error card — icon + summary with line number, source
+   listing with the offending line marked, and a copy button. */
 .markdown-body .mermaid.is-error {
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
-  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-elev-2));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--text);
   text-align: left;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  position: relative;
 }
-.markdown-body .mermaid.is-error pre { background: transparent; border: 0; color: inherit; font-size: 12px; }
+.mermaid-error__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
+}
+.mermaid-error__icon {
+  color: var(--danger);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.mermaid-error__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.mermaid-error__titles strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+}
+.mermaid-error__summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.mermaid-error__source {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--text-muted);
+}
+.mermaid-error__line {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  white-space: pre;
+}
+.mermaid-error__line.is-bad {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--text);
+  /* Full-bleed stripe: negate parent's horizontal padding. */
+  margin: 0 -12px;
+  padding: 0 12px;
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.mermaid-error__ln {
+  color: color-mix(in srgb, var(--text-muted) 65%, transparent);
+  user-select: none;
+  text-align: right;
+  min-width: 2ch;
+  flex-shrink: 0;
+}
+.mermaid-error__line.is-bad .mermaid-error__ln { color: var(--danger); }
+.mermaid-error__code { white-space: pre; }
+.mermaid-error__copy {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text-muted);
+  font: 500 11px/1 'Inter', system-ui, sans-serif;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.mermaid-error__copy:hover {
+  color: var(--text);
+  border-color: var(--border-strong, color-mix(in srgb, var(--border) 65%, var(--text-muted)));
+}
+.mermaid-error__copy:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+.mermaid-error__copy.is-copied {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
 
 /* Lightbox — pan & zoom viewer */
 .lightbox {
@@ -2277,6 +2413,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   position: relative; flex: 1;
   overflow: hidden;
   cursor: grab;
+  touch-action: none;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border-strong) 50%, transparent) 1px, transparent 0) 0 0 / 24px 24px,
     var(--bg);
@@ -2284,8 +2421,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .lightbox__stage:active { cursor: grabbing; }
 .lightbox__canvas {
   position: absolute; left: 50%; top: 50%;
-  transform-origin: 50% 50%;
-  will-change: transform;
+  transform: translate(-50%, -50%);
+  /* No will-change/scale — zoom writes SVG width/height attrs directly,
+     keeping every level vector-crisp. A GPU layer would cache a single
+     rasterization and defeat that. */
   pointer-events: none;
 }
 .lightbox__canvas svg { display: block; }
@@ -2306,6 +2445,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   transition: opacity 320ms ease;
 }
 .lightbox__hint.is-show { opacity: 0.95; }
+.lightbox__hint--touch { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .lightbox { animation: none; }
 }
@@ -2549,6 +2689,8 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 @media (max-width: 960px) {
   .topbar { grid-template-columns: auto 1fr auto; padding: 0 10px; }
   .topbar__brand .topbar__subtitle { display: none; }
+  /* Hide text label, keep logo — avoids colliding with centre controls. */
+  .topbar__title-brand { display: none; }
   .topbar__actions .btn span { display: none; }
   .topbar__actions .dropdown__trigger span { display: inline; }
   .pane__header { padding: 6px 10px; }
@@ -2730,9 +2872,13 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   display: inline-flex;
   gap: 2px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--t-fast) var(--ease-out);
 }
-.project:hover .project__actions, .project:focus-within .project__actions { opacity: 1; }
+.project:focus-within .project__actions { opacity: 1; pointer-events: auto; }
+@media (hover: hover) {
+  .project:hover .project__actions { opacity: 1; pointer-events: auto; }
+}
 .project__action {
   display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
@@ -2816,9 +2962,14 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .file__actions {
   display: inline-flex; gap: 1px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--t-fast) var(--ease-out);
 }
-.file:hover .file__actions, .file:focus-within .file__actions { opacity: 1; }
+.file:focus-within .file__actions,
+.file.is-active .file__actions { opacity: 1; pointer-events: auto; }
+@media (hover: hover) {
+  .file:hover .file__actions { opacity: 1; pointer-events: auto; }
+}
 .file__action {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
@@ -3280,7 +3431,6 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   .shell { transition: none; }
 }
 
-
 @media print {
   .topbar, .statusbar, .pane--editor, .resizer, .pane__header, .toast, .drop-overlay,
   .code-copy, .code-lang, .diagram-expand, .toc,
@@ -3408,44 +3558,129 @@ button:disabled.find-bar__toggle {
 .toast__action:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); border-color: var(--accent); transform: translateY(-1px); }
 .toast__action:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 
+/* Find & replace. Fixed top-right under the tabs row. A left chevron
+   sits next to stacked find + replace rows; replace animates via
+   max-height/opacity + margin so the chevron and row move together.
+   See the media queries at the bottom for tablet/mobile. */
 .find-bar {
   position: fixed;
-  top: calc(var(--topbar-h) + 10px);
-  right: 24px;
-  min-width: 360px;
-  max-width: calc(100vw - 48px);
+  top: calc(var(--topbar-h) + 42px); /* 34px tabs + 8px gap */
+  right: 16px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
   background: color-mix(in srgb, var(--bg-elev-2) 96%, transparent);
   backdrop-filter: blur(14px) saturate(160%);
   -webkit-backdrop-filter: blur(14px) saturate(160%);
   border: 1px solid var(--border-strong);
+  align-items: flex-start; /* chevron tracks the find-row top, not the
+                              midpoint of the expanded find+replace stack */
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   display: none;
-  padding: 8px;
+  gap: 4px;
+  padding: 5px;
   z-index: 90;
 }
-.find-bar.is-open { display: block; }
+.find-bar.is-open { display: flex; }
+/* Chevron rotates 90° when replace expands (VS Code / DevTools convention). */
+.find-bar__expand {
+  flex-shrink: 0;
+  width: 20px;
+  min-height: 28px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-out),
+              color var(--t-fast) var(--ease-out),
+              border-color var(--t-fast) var(--ease-out);
+}
+.find-bar__expand svg { transition: transform 220ms var(--ease-out); }
+.find-bar__expand:hover { color: var(--text); background: var(--bg-elev-3); }
+.find-bar__expand:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+.find-bar.is-replace .find-bar__expand svg { transform: rotate(90deg); }
+.find-bar.is-replace .find-bar__expand { color: var(--text); }
+.find-bar__rows {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* No gap — the replace row animates its own margin-top so spacing
+     slides in/out with the row. */
+}
 .find-bar__row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 3px;
+  min-width: 0;
 }
-.find-bar__row--replace { margin-top: 6px; display: none; }
-.find-bar.is-replace .find-bar__row--replace { display: flex; }
-.find-bar__field {
-  flex: 1 1 auto;
+/* Replace row stays in flow and collapses via max-height + opacity + margin.
+   JS sets `inert` to keep collapsed inputs off the tab order. */
+.find-bar__row--replace {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: max-height 240ms var(--ease-out),
+              margin-top 240ms var(--ease-out),
+              opacity 180ms var(--ease-out);
+}
+.find-bar.is-replace .find-bar__row--replace {
+  max-height: 200px; /* cap accommodates wrapping replace buttons <360px */
+  margin-top: 8px;
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .find-bar__row--replace,
+  .find-bar__hint,
+  .find-bar__expand svg { transition: none; }
+}
+
+/* "Match hidden in preview" hint (mermaid fence, raw HTML, comment, math).
+   Same expand/collapse idiom as the replace row. */
+.find-bar__hint {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding: 0 6px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--warning) 80%, var(--text));
+  transition: max-height 220ms var(--ease-out),
+              margin-top 220ms var(--ease-out),
+              opacity 160ms var(--ease-out);
+}
+.find-bar__hint.is-visible {
+  max-height: 60px;
+  margin-top: 6px;
+  opacity: 1;
+}
+.find-bar__hint svg { flex-shrink: 0; color: var(--warning); }
+.find-bar__hint-text { line-height: 1.35; word-break: break-word; }
+.find-bar__field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
   background: var(--bg-elev-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5px;
   transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
 }
 .find-bar__field:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 .find-bar__field svg { color: var(--text-muted); flex-shrink: 0; }
 .find-bar__input {
@@ -3461,50 +3696,66 @@ button:disabled.find-bar__toggle {
 .find-bar__input.is-invalid { color: var(--warning); }
 .find-bar__count {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   flex-shrink: 0;
-  min-width: 48px;
+  min-width: 36px;
   text-align: right;
 }
+/* Search-option toggles (Aa / W / .*). Container kept unstyled — a
+   border+bg here would read as a second detached "field". */
 .find-bar__toggles {
   display: inline-flex;
   gap: 2px;
-  background: var(--bg-elev-3);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px;
+  flex-shrink: 0;
 }
 .find-bar__toggle {
-  width: 28px;
-  height: 26px;
+  width: 26px;
+  height: 28px;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   background: transparent;
-  border: 0;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
   cursor: pointer;
-  transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+  transition: background var(--t-fast) var(--ease-out),
+              color var(--t-fast) var(--ease-out),
+              border-color var(--t-fast) var(--ease-out);
 }
-.find-bar__toggle:hover { color: var(--text); background: color-mix(in srgb, var(--bg-elev-1) 60%, transparent); }
+.find-bar__toggle:hover {
+  color: var(--text);
+  background: var(--bg-elev-3);
+  border-color: var(--border);
+}
 .find-bar__toggle.is-active {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
   color: var(--text);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
 }
 .find-bar__toggle:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
-.find-bar__controls { display: inline-flex; gap: 2px; }
+/* Hairline divider between toggles and nav controls. Hidden when the
+   row wraps (≤900px). */
+.find-bar__row > .find-bar__controls::before {
+  content: '';
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 3px 0 1px;
+  align-self: center;
+  flex-shrink: 0;
+}
+.find-bar__controls { display: inline-flex; gap: 1px; flex-shrink: 0; }
 .find-bar__btn {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: inline-grid;
   place-items: center;
   color: var(--text-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 5px;
   cursor: pointer;
   transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
 }
@@ -3521,7 +3772,66 @@ button:disabled.find-bar__toggle {
   font-weight: 500;
 }
 .find-bar__close { margin-left: 2px; }
+
+/* Find bar responsive:
+   Desktop (>900px): 400px dialog, top-right below the tabs.
+   Tablet  (≤900px): fluid, row wraps when cramped.
+   Mobile  (≤560px): field on its own line. */
+
+@media (max-width: 900px) {
+  .find-bar {
+    left: 14px;
+    right: 14px;
+    top: calc(var(--topbar-h) + 46px); /* 40px tabs + 6px gap */
+    width: auto;
+    max-width: none;
+  }
+  .find-bar__row {
+    flex-wrap: wrap;
+    row-gap: 5px;
+  }
+  /* Min-basis keeps the field readable; below it, toggles + controls wrap. */
+  .find-bar__field { flex: 1 1 200px; }
+  /* Wrapped: push controls to the far right of line 2. */
+  .find-bar__row > .find-bar__controls { margin-left: auto; }
+  .find-bar__row > .find-bar__controls::before { display: none; }
+}
+
 @media (max-width: 560px) {
-  .find-bar { right: 12px; left: 12px; min-width: 0; }
+  .find-bar {
+    top: calc(var(--topbar-h) + 44px); /* 40px tabs (mobile.css) + 4px gap */
+    left: 8px;
+    right: 8px;
+    border-radius: 8px;
+  }
+  .find-bar__field { flex: 1 1 100%; }
+  .find-bar__expand { width: 18px; }
+}
+
+/* Find-match highlights in the rendered preview. Overrides the UA
+   yellow/black defaults; scroll positioning is handled in JS. */
+mark.find-match {
+  background: color-mix(in srgb, var(--warning) 38%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 50%, transparent);
+}
+mark.find-match--active {
+  background: var(--accent);
+  color: #041611;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 75%, transparent);
+  animation: find-pulse 420ms var(--ease-out, ease-out) 1;
+}
+/* Light theme accent is darker; white reads better on it than dark text. */
+:root[data-theme='light'] mark.find-match--active { color: #ffffff; }
+@keyframes find-pulse {
+  0%   { filter: brightness(1.6);
+         box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 60%, transparent); }
+  100% { filter: brightness(1);
+         box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 75%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  mark.find-match--active { animation: none; }
 }
 

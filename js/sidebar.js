@@ -19,7 +19,7 @@
 import {
   Store,
   createProject, renameProject, setProjectCollapsed, deleteProject, reorderProjects,
-  createFile, renameFile, duplicateFile, deleteFile, restoreFile, restoreProject, reorderFiles, moveFile,
+  createFile, renameFile, duplicateFile, deleteFile, reorderFiles, moveFile,
   searchFiles, uniqueFileName, projectColor,
 } from './projects.js';
 import { DB, onBlocked } from './db.js';

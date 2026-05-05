@@ -18,12 +18,12 @@ MarkdownLab is a single-page web application at https://markdownlab.vercel.app/.
 
 - Live split-view markdown preview with optional editor/preview scroll sync.
 - Full GitHub Flavored Markdown (GFM) support: tables, task lists, strikethrough, autolinks, footnotes, fenced code blocks, heading anchors.
-- Mermaid diagrams: flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie, journey, gitgraph. Click any diagram to zoom; export as 2× PNG.
+- Mermaid diagrams: flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie, journey, gitgraph. Click any diagram to open an interactive viewer with pinch, wheel, and keyboard zoom; export as 2× PNG. Parse errors render as a structured card with the offending line highlighted and a "Copy source" action.
 - KaTeX math: inline `$...$` and block `$$...$$`. Full LaTeX math-mode syntax.
 - Syntax highlighting across 190+ languages via highlight.js.
 - Multi-file projects with sidebar tree, draggable tabs, and a `Ctrl/Cmd + P` command palette.
 - Export to HTML (self-contained, offline-ready), PDF (vector text via browser print), or Markdown source.
-- Find and replace with regex, case-sensitive, and whole-word toggles.
+- Find and replace across both the editor and the rendered preview, with regex, case-sensitive, and whole-word toggles. Matches inside collapsed regions (Mermaid fences, math blocks, HTML comments) are surfaced and explained.
 - Drag-and-drop `.md`, `.markdown`, or `.txt` imports. Folder import supported.
 - Dark and light themes (WCAG AA contrast).
 - Focus mode, reading mode with prose typography.
@@ -52,6 +52,9 @@ MarkdownLab is a single-page web application at https://markdownlab.vercel.app/.
 - `Ctrl/Cmd + 1/2/3` — editor / split / preview views
 - `Ctrl/Cmd + F` — find in file
 - `Ctrl/Cmd + H` (or `Ctrl/Cmd + Shift + F`) — find and replace
+- `F3` or `Ctrl/Cmd + G` — next match (add `Shift` for previous)
+- `Alt + C` / `Alt + W` / `Alt + R` — toggle case-sensitive, whole-word, regex
+- `+` / `−` / `0` / arrow keys — zoom and pan in the diagram viewer
 - `?` — show all keyboard shortcuts overlay
 
 ## Primary documents

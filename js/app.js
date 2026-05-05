@@ -1053,12 +1053,16 @@ function resetMermaidNodes(nodes) {
 
 // Offscreen sandbox for mermaid.render(). Rendering inside a display:none
 // pane returns 0×0 bounding rects and Dagre then emits NaN transforms;
-// an off-screen-but-laid-out container keeps measurements honest.
+// an off-screen-but-laid-out container keeps measurements honest. The
+// `markdown-body` class makes htmlLabel text measure under the same
+// font-size / line-height the preview renders with, so foreignObject
+// dimensions baked into the SVG match the text at render time.
 let _mermaidSandbox = null;
 function ensureMermaidSandbox() {
   if (_mermaidSandbox && _mermaidSandbox.isConnected) return _mermaidSandbox;
   _mermaidSandbox = document.createElement('div');
   _mermaidSandbox.id = 'mermaid-sandbox';
+  _mermaidSandbox.className = 'markdown-body';
   _mermaidSandbox.setAttribute('aria-hidden', 'true');
   // 1200px mirrors a typical preview column width.
   _mermaidSandbox.style.cssText =

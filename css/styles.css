@@ -40,6 +40,12 @@ a:hover { text-decoration: underline; }
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-read: 'Lora', Georgia, 'Times New Roman', serif;
 
+  /* Rendered-markdown text metrics. Single source of truth — the mermaid
+     sandbox (#mermaid-sandbox in app.js) and .lightbox__canvas mirror these
+     so htmlLabel measurement and render share one font context. */
+  --md-body-font-size:   15.5px;
+  --md-body-line-height: 1.7;
+
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
   --t-fast: 120ms;
@@ -1745,8 +1751,8 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 
 /* Preview typography — markdown body */
 .markdown-body {
-  font-size: 15.5px;
-  line-height: 1.7;
+  font-size: var(--md-body-font-size);
+  line-height: var(--md-body-line-height);
   word-wrap: break-word;
 }
 .markdown-body > *:first-child { margin-top: 0; }
@@ -2125,6 +2131,13 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   min-height: 80px;
 }
 .markdown-body .mermaid svg { max-width: 100%; height: auto; display: inline-block; }
+
+/* Mirror `.markdown-body` font context so cloned mermaid SVGs render with
+   the same text metrics they were measured under in the sandbox. */
+.lightbox__canvas {
+  font-size: var(--md-body-font-size);
+  line-height: var(--md-body-line-height);
+}
 
 /* Descender clip fix — Mermaid sizes each <foreignObject> tight to the
    text baseline, so `y`, `p`, `q`, `g`, `j` tails render *below* the box

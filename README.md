@@ -92,8 +92,8 @@ async function render(src: string): Promise<string> {
 |---|---|
 | **Content** | GFM, footnotes, alerts, Mermaid (10 diagram types), KaTeX (inline + block), 190+ highlighted languages |
 | **Editing** | Live split preview with end-to-end latency under 40 ms, content-aware scroll sync, soft-wrapped editor with accurate line numbers, focus mode, reading mode |
-| **Projects** | Sidebar with projects + files, draggable tabs, fuzzy search, command palette (`⌘P`), find-and-replace with regex, folder import, undoable delete |
-| **Diagrams** | Click-to-zoom lightbox, cursor-focal wheel zoom, 2× PNG export with inlined computed styles, redraws on theme change, WCAG AA palette |
+| **Projects** | Sidebar with projects + files, draggable tabs, fuzzy search, command palette (`⌘P`), dual-pane find-and-replace with regex, folder import, undoable delete |
+| **Diagrams** | Pinch, wheel, and keyboard-zoomable lightbox, in-viewer theme toggle, 2× PNG export with inlined computed styles, redraws on theme change, WCAG AA palette, structured parse-error card for Mermaid |
 | **Exports** | Self-contained HTML, vector PDF (native `window.print()`), Markdown source, clipboard copy of rendered HTML or source |
 | **UX** | Dark + light themes (WCAG AA in both), keyboard-first navigation, responsive drawer on mobile |
 | **Offline** | Service worker caches the app shell and pinned CDN deps on first visit; installable as a PWA |
@@ -108,7 +108,7 @@ async function render(src: string): Promise<string> {
 - Soft-wrapped editor with a hidden mirror that keeps line math correct
 - Line numbers track soft-wrapped lines exactly
 - Per-file autosave — cursor position, scroll, and dirty indicator
-- `Tab` inserts two spaces; `Ctrl+F` / `Ctrl+H` open find / find-and-replace with regex
+- `Tab` inserts two spaces; `Ctrl+F` / `Ctrl+H` open find / find-and-replace with regex, matching in both the editor and the rendered preview
 
 ### Projects and files
 - IndexedDB storage (localStorage fallback for private browsing)
@@ -119,10 +119,13 @@ async function render(src: string): Promise<string> {
 - 7-second undo toast on deletes — no accidental permanent loss
 
 ### Diagrams
-- Interactive lightbox with drag-to-pan and scroll-to-zoom
-- Wheel zoom calibrated for both mouse wheels and trackpad pinch
+- Interactive lightbox with drag-to-pan and two-finger pinch zoom on touch
+- Wheel zoom calibrated for both mouse wheels and trackpad pinch; `+` / `−` / `0` / arrow-key zoom and pan from the keyboard
+- Attribute-based SVG zoom — vectors re-rasterize crisply at every level, including `<foreignObject>` HTML labels
+- In-viewer theme toggle re-themes diagrams without leaving the lightbox, preserving scale and pan
 - 2× PNG export with inlined computed styles — colors match on-screen output exactly
 - Auto theme — diagrams redraw on theme toggle without re-parsing the document
+- Mermaid parse errors render as a structured card with the offending line highlighted and a Copy source action
 
 ### Exports
 - HTML export inlines KaTeX + highlight.js CSS when the network is reachable; falls back to CDN `<link>` tags otherwise
@@ -171,8 +174,10 @@ Runbook fragments with syntax-highlighted code and GitHub-style callouts. Chart 
 |---|---|
 | <kbd>Ctrl/Cmd</kbd> + <kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd> | Editor / Split / Preview view |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>P</kbd> | Command palette / quick open |
-| <kbd>Ctrl/Cmd</kbd> + <kbd>F</kbd> | Find in file |
+| <kbd>Ctrl/Cmd</kbd> + <kbd>F</kbd> | Find in file (editor and preview) |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>H</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> | Find and replace |
+| <kbd>F3</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>G</kbd> | Next match (add <kbd>Shift</kbd> for previous) |
+| <kbd>Alt</kbd> + <kbd>C</kbd> / <kbd>W</kbd> / <kbd>R</kbd> | Toggle case-sensitive, whole-word, regex |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>B</kbd> | Toggle sidebar |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>N</kbd> | New file in active project |
 | <kbd>Ctrl/Cmd</kbd> + <kbd>W</kbd> | Close current tab |
@@ -186,7 +191,7 @@ Runbook fragments with syntax-highlighted code and GitHub-style callouts. Chart 
 | <kbd>/</kbd> | Focus sidebar search |
 | <kbd>?</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>/</kbd> | Show all shortcuts |
 | <kbd>Esc</kbd> | Exit focus / close dialog |
-| <kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd> | Zoom in / out / fit (diagram viewer) |
+| <kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd> / arrow keys | Zoom in / out / fit / pan (diagram viewer) |
 | <kbd>Tab</kbd> | Insert two spaces (editor) |
 
 ## How it works
@@ -266,7 +271,7 @@ GitHub Flavored Markdown (GFM) via the [`marked`](https://marked.js.org/) parser
 <details>
 <summary><b>Can I render Mermaid diagrams?</b></summary>
 
-Yes — any fenced block tagged <code>mermaid</code> renders as an interactive diagram with click-to-zoom and 2× PNG export. All 10 diagram types Mermaid 10.9 supports.
+Yes — any fenced block tagged <code>mermaid</code> renders as an interactive diagram. The viewer supports pinch (touch), wheel, and keyboard zoom, drag-to-pan, an in-viewer theme toggle, and 2× PNG export. All 10 diagram types Mermaid 10.9 supports.
 </details>
 
 <details>

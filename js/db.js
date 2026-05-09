@@ -1,17 +1,15 @@
-/* MarkdownLab — IndexedDB wrapper.
+/**
+ * MarkdownLab — IndexedDB wrapper with a localStorage fallback shim.
  *
  * Schema:
  *   projects  → { id, name, color, order, createdAt }
  *   files     → { id, projectId, name, content, order, createdAt, updatedAt,
  *                 scrollEditor, scrollPreview, cursor }
- *   session   → { key, value }        (singleton key/value pairs)
+ *   session   → { key, value }   (singleton k/v pairs)
  *
- * The wrapper exposes a minimal promise-based API. Every call that touches the
- * DB first runs `await dbReady` so callers can fire without awaiting `openDb`
- * explicitly.
- *
- * Private-mode / quota / blocked-upgrade failures are surfaced through
- * `dbReady` rejecting; callers can catch and fall back to a localStorage shim.
+ * All calls are promise-based and await `dbReady` transparently. Private-
+ * mode, quota, and blocked-upgrade failures surface through `dbReady`
+ * rejecting; the `DB` facade then routes operations to `lsFallback`.
  */
 
 const DB_NAME = 'mdlab';
@@ -86,10 +84,10 @@ function promisify(request) {
   });
 }
 
-// A request's onsuccess fires when the request is queued in the tx, BEFORE
-// the tx commits. Quota / constraint errors can still fire on the tx itself
-// (oncomplete / onerror / onabort). `awaitRequest` wraps both so callers
-// get a promise that only resolves once the bytes are durable.
+// A request's onsuccess fires when the request is queued, BEFORE the
+// transaction commits. Quota / constraint errors can still fire on the
+// tx itself (complete/error/abort). Resolve only after the tx commits
+// so callers know the bytes are durable.
 function awaitRequest(request) {
   return new Promise((resolve, reject) => {
     const tx = request.transaction;
@@ -97,14 +95,13 @@ function awaitRequest(request) {
     let settled = false;
     const fail = (err) => { if (!settled) { settled = true; reject(err || new Error('IndexedDB transaction failed')); } };
 
-    request.onerror   = () => fail(request.error);
+    request.onerror = () => fail(request.error);
     if (tx) {
       request.onsuccess = () => { requestResult = request.result; };
       tx.oncomplete     = () => { if (!settled) { settled = true; resolve(requestResult); } };
       tx.onerror        = () => fail(tx.error);
       tx.onabort        = () => fail(tx.error || new Error('IndexedDB transaction aborted (likely quota)'));
     } else {
-      // No transaction attached — fall back to request-level resolution.
       request.onsuccess = () => { if (!settled) { settled = true; resolve(request.result); } };
     }
   });
@@ -122,12 +119,11 @@ export async function put(store, value) {
   return awaitRequest(s.put(value));
 }
 
+// All puts share one tx; awaiting the last one's tx completion guarantees
+// the whole batch is durable.
 export async function bulkPut(store, values) {
   if (values.length === 0) return [];
   const s = await tx(store, 'readwrite');
-  // All puts share one transaction; awaiting the last one's tx completion
-  // guarantees the whole batch is durable. Earlier requests resolve their
-  // individual `request.result` synchronously via `onsuccess`.
   const results = new Array(values.length);
   for (let i = 0; i < values.length - 1; i++) {
     const req = s.put(values[i]);
@@ -158,7 +154,7 @@ export async function getAllByIndex(store, indexName, value) {
   return promisify(idx.getAll(value));
 }
 
-// Session: singleton key/value pairs (active-file, sidebar width, etc.).
+// Session — singleton k/v pairs (active file, sidebar width, etc.).
 export async function sessionGet(key) {
   try {
     const row = await get('session', key);
@@ -172,7 +168,7 @@ export async function sessionSet(key, value) {
   try { return await put('session', { key, value }); } catch { return undefined; }
 }
 
-// ---- localStorage fallback shim ----------------------------------------
+// ── localStorage fallback shim ──────────────────────────────────────
 // Activated when IndexedDB fails (private mode, quota, hostile profiles).
 // API-compatible with the functions above but capped at ~3 MB total.
 
@@ -245,8 +241,8 @@ export const lsFallback = {
   },
 };
 
-// Main DB facade — routes to IndexedDB or falls through to localStorage.
-// Callers use `DB.*` not the raw functions, so switching is transparent.
+// Public facade — transparently routes to IndexedDB or the localStorage
+// shim. Callers use `DB.*` so switching is invisible.
 export const DB = {
   _useFallback: null,
 
@@ -290,10 +286,10 @@ function isIdbRuntimeFailure(err) {
       || /DB_UNAVAILABLE/.test(err?.message || '');
 }
 
-// Collision-resistant ID generator. Prefers crypto.randomUUID() where
-// available (secure contexts on all supported browsers); falls back to
-// a timestamp + 48-bit random combo for file:// previews and similar
-// non-secure contexts.
+/**
+ * Collision-resistant ID. Prefers `crypto.randomUUID` (secure contexts);
+ * falls back to timestamp + 48-bit random for `file://` previews.
+ */
 export function newId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();

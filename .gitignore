@@ -9,3 +9,8 @@ node_modules/
 docs/
 .playwright-mcp/
 temp.txt
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/

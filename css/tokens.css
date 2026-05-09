@@ -1,0 +1,144 @@
+/* Design tokens — single source of truth for colour, typography, spacing,
+ * motion. Loaded before styles.css so every selector can reference var(--…).
+ *
+ * Layers (in declaration order):
+ *   1. Structural tokens — theme-invariant (sizing, type scale, motion)
+ *   2. Dark palette   (:root[data-theme='dark'])
+ *   3. Light palette  (:root[data-theme='light'])
+ *
+ * The --mermaid-* vars are read from JS by applyMermaidContrast (js/app.js). */
+
+/* 1. Structural tokens */
+:root {
+  --topbar-h: 56px;
+  --statusbar-h: 32px;
+  --sidebar-width-default: 280px;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-pill: 9999px;
+
+  --font-body: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-read: 'Lora', Georgia, 'Times New Roman', serif;
+
+  /* Shared by preview, lightbox, and the mermaid sandbox so htmlLabel
+     measurement and final paint use the same text metrics. */
+  --md-body-font-size:   15.5px;
+  --md-body-line-height: 1.7;
+
+  --ease-out:  cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+  --t-slow: 280ms;
+}
+
+/* 2. Dark palette */
+:root[data-theme='dark'] {
+  /* Surfaces */
+  --bg:            #0b0d12;
+  --bg-elev-1:     #10131a;
+  --bg-elev-2:     #161a23;
+  --bg-elev-3:     #1c212c;
+  --surface:       #0f1219;
+  --border:        #242a38;
+  --border-strong: #323a4d;
+
+  /* Text */
+  --text:          #e5e7eb;
+  --text-muted:    #9aa3b2;
+  --text-dim:      #8892a5;
+  --text-on-accent: #ffffff;
+
+  /* Brand */
+  --accent:      #10b981;
+  --accent-a:    #059669;
+  --accent-b:    #0891b2;
+  --accent-soft: rgba(16, 185, 129, 0.14);
+  --accent-ring: rgba(16, 185, 129, 0.35);
+
+  /* Feedback */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger:  #ef4444;
+
+  /* Code & keyboard */
+  --code-bg:        #0f1419;
+  --code-border:    #243244;
+  --code-inline-bg: #1a2332;
+  --kbd-bg:         #1a2332;
+
+  /* Mermaid canvas + contrast neutrals (read from JS, see applyMermaidContrast) */
+  --mermaid-bg:          #0f1a1d;
+  --mermaid-fg-strong:   #f8fafc;   /* slate-50  — text on dark fills */
+  --mermaid-fg-on-light: #0f172a;   /* slate-900 — text on light fills */
+  --mermaid-edge-bg:     #0f141c;   /* default edge-label pill bg */
+  --mermaid-edge-bg-2:   #1e293b;   /* alternate pill (ER relationshipLabelBox) */
+  --mermaid-grid:        #2d3548;
+  --mermaid-grid-path:   #3b4458;
+  --mermaid-tick-text:   #94a3b8;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.50);
+
+  color-scheme: dark;
+}
+
+/* 3. Light palette */
+:root[data-theme='light'] {
+  /* Surfaces */
+  --bg:            #f7f8fb;
+  --bg-elev-1:     #ffffff;
+  --bg-elev-2:     #ffffff;
+  --bg-elev-3:     #f1f3f8;
+  --surface:       #ffffff;
+  --border:        #e5e7ec;
+  --border-strong: #cfd4df;
+
+  /* Text */
+  --text:          #0f172a;
+  --text-muted:    #475569;
+  --text-dim:      #64748b;
+  --text-on-accent: #ffffff;
+
+  /* Brand */
+  --accent:      #0d9488;
+  --accent-a:    #059669;
+  --accent-b:    #0e7490;
+  --accent-soft: rgba(13, 148, 136, 0.10);
+  --accent-ring: rgba(13, 148, 136, 0.30);
+
+  /* Feedback */
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger:  #dc2626;
+
+  /* Code & keyboard */
+  --code-bg:        #f6f8fa;
+  --code-border:    #d0d7de;
+  --code-inline-bg: #eef1f6;
+  --kbd-bg:         #eef1f6;
+
+  /* Mermaid canvas + contrast neutrals (read from JS, see applyMermaidContrast) */
+  --mermaid-bg:          #ffffff;
+  --mermaid-fg-strong:   #0f172a;
+  --mermaid-fg-on-light: #0f172a;
+  --mermaid-edge-bg:     #ffffff;
+  --mermaid-edge-bg-2:   #f1f5f9;
+  --mermaid-grid:        #e2e8f0;
+  --mermaid-grid-path:   #cbd5e1;
+  --mermaid-tick-text:   #64748b;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.15);
+
+  color-scheme: light;
+}

@@ -1,15 +1,10 @@
-/* MarkdownLab — file tab strip above the editor.
+/**
+ * File tab strip above the editor.
  *
- * Renders one `.tab` per open file. A tab shows the filename, a dirty dot
- * while pending writes exist, and a close button. The active tab is
- * underlined with an accent bar. Tabs are:
- *   · click to activate
- *   · middle-click or `×` to close (with confirmation if dirty)
- *   · drag-and-drop to reorder (HTML5 DnD API)
- *   · keyboard-navigable (Ctrl+Tab and Ctrl+Shift+Tab cycle)
- *   · horizontally scrollable when they overflow
- *
- * The tabs scroll container auto-scrolls the active tab into view.
+ * One `.tab` per open file, showing filename, optional dirty dot, and a
+ * close button. Tabs: click to activate, middle-click / × to close (with
+ * confirm if dirty), drag to reorder, Ctrl+Tab / Ctrl+Shift+Tab cycles.
+ * Active tab scrolls into view when the strip overflows.
  */
 
 import { Store, activateFile, closeFile, reorderTabs, createFile, uniqueFileName } from './projects.js';
@@ -30,7 +25,7 @@ export function initTabs(callbacks = {}) {
   };
 
   els.add?.addEventListener('click', async () => {
-    const active = Store.activeProject() || Store.projectList()[0];
+    const active = Store.focusedProject();
     if (!active) return;
     const name = uniqueFileName(active.id, 'Untitled.md');
     const f = await createFile({ projectId: active.id, name, content: '' });

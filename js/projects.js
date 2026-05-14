@@ -1,25 +1,23 @@
-/* MarkdownLab — project / file / tab state manager.
+/**
+ * Project / file / tab state manager.
  *
- * State shape held in memory (mirrored to IndexedDB):
- *   projects: Map<id, Project>     Project = { id, name, color, order, createdAt, collapsed }
- *   files:    Map<id, File>        File    = { id, projectId, name, content, order,
- *                                              createdAt, updatedAt, cursor,
- *                                              scrollEditor, scrollPreview }
- *   openIds:  string[]             Ordered list of open tabs.
- *   activeId: string | null        Currently active tab.
+ * In-memory state (mirrored to IndexedDB):
+ *   projects: Map<id, Project>   { id, name, color, order, createdAt, collapsed }
+ *   files:    Map<id, File>      { id, projectId, name, content, order,
+ *                                  createdAt, updatedAt, cursor,
+ *                                  scrollEditor, scrollPreview }
+ *   openIds:  string[]           Ordered list of open tabs.
+ *   activeId: string | null      Currently active tab.
+ *   dirty:    Set<id>            Files with pending writes (tabs show `●`).
  *
- * Mutations go through this module so every UI surface (sidebar, tabs,
- * editor, status bar) can subscribe to a single event bus.
- *
- * We also carry per-file dirty state in a Set<id> for the in-memory session;
- * tabs show a `●` while a file has pending writes.
+ * All mutations go through this module so the sidebar, tab strip, editor,
+ * and status bar can subscribe to a single event bus via `Store.on`.
  */
 
 import { DB, newId } from './db.js';
 
-// Project colors cycle through the brand palette; each project gets a
-// deterministic color based on creation order so the sidebar stays varied
-// without requiring manual picks.
+// Each project picks a color deterministically from this palette by
+// creation order — varied sidebars without manual pickers.
 export const PROJECT_COLORS = [
   { id: 'emerald', hex: '#10b981' },
   { id: 'cyan',    hex: '#06b6d4' },
@@ -38,6 +36,10 @@ export const Store = {
   files:    new Map(),
   openIds:  [],
   activeId: null,
+  // Last project the user interacted with. Routes topbar uploads and
+  // new-file actions even when no file is open; kept separate from
+  // activeId so focus survives closing all tabs.
+  lastActiveProjectId: null,
   dirty:    new Set(),
 
   _listeners: new Set(),
@@ -49,7 +51,7 @@ export const Store = {
     }
   },
 
-  // ---- Derived selectors --------------------------------------------------
+  // ── Derived selectors ────────────────────────────────────────────
   projectList() {
     return Array.from(this.projects.values()).sort((a, b) => a.order - b.order);
   },
@@ -68,9 +70,22 @@ export const Store = {
     const f = this.activeFile();
     return f ? this.projects.get(f.projectId) : null;
   },
+  // Priority: lastActiveProjectId > activeFile's project > first project.
+  focusedProject() {
+    if (this.lastActiveProjectId && this.projects.has(this.lastActiveProjectId)) {
+      return this.projects.get(this.lastActiveProjectId);
+    }
+    return this.activeProject() || this.projectList()[0] || null;
+  },
+  setFocusedProject(projectId) {
+    if (!projectId || !this.projects.has(projectId)) return;
+    if (this.lastActiveProjectId === projectId) return;
+    this.lastActiveProjectId = projectId;
+    this.emit('project:focused', { projectId });
+  },
 };
 
-// ---- Load / seed --------------------------------------------------------
+// ── Load / seed ──────────────────────────────────────────────────────
 
 const LEGACY_DOC_KEY = 'mdlab.doc.v1';
 const LEGACY_MIGRATED_FLAG = 'mdlab.doc.v1.migrated';
@@ -89,9 +104,7 @@ function readLegacyDoc() {
 }
 
 function markLegacyMigrated() {
-  try {
-    localStorage.setItem(LEGACY_MIGRATED_FLAG, '1');
-  } catch {}
+  try { localStorage.setItem(LEGACY_MIGRATED_FLAG, '1'); } catch {}
 }
 
 export async function loadAll({ fallbackContent } = {}) {
@@ -105,15 +118,16 @@ export async function loadAll({ fallbackContent } = {}) {
   Store.projects = new Map(projects.map(p => [p.id, p]));
   Store.files    = new Map(files.map(f => [f.id, f]));
 
-  const [openIds, activeId] = await Promise.all([
+  const [openIds, activeId, lastActiveProjectId] = await Promise.all([
     DB.sessionGet('openIds'),
     DB.sessionGet('activeId'),
+    DB.sessionGet('lastActiveProjectId'),
   ]);
   Store.openIds  = Array.isArray(openIds) ? openIds.filter(id => Store.files.has(id)) : [];
   Store.activeId = Store.files.has(activeId) ? activeId : (Store.openIds[0] || null);
+  Store.lastActiveProjectId = Store.projects.has(lastActiveProjectId) ? lastActiveProjectId : null;
 
-  // First-run seed: create a "My documents" project + welcome file if the
-  // DB is empty.
+  // First-run seed: "My documents" project + welcome file if DB is empty.
   if (Store.projects.size === 0 && Store.files.size === 0) {
     const legacy = readLegacyDoc();
     if (legacy) {
@@ -159,7 +173,7 @@ async function seedFromLegacy({ source, filename }) {
   await persistSession();
 }
 
-// ---- Projects -----------------------------------------------------------
+// ── Projects ─────────────────────────────────────────────────────────
 
 export async function createProject({ name = 'New project', emit = true } = {}) {
   const order = Store.projects.size;
@@ -174,6 +188,9 @@ export async function createProject({ name = 'New project', emit = true } = {}) 
   };
   Store.projects.set(project.id, project);
   await DB.put('projects', project);
+  // New project becomes focus target for topbar upload + new-file actions.
+  Store.lastActiveProjectId = project.id;
+  await DB.sessionSet('lastActiveProjectId', project.id);
   if (emit) Store.emit('project:created', { project });
   return project;
 }
@@ -194,9 +211,9 @@ export async function setProjectCollapsed(id, collapsed) {
   Store.emit('project:updated', { project: p });
 }
 
-// Delete a project and its files. State mutations complete before any
-// `file:deleted` events are emitted so subscribers never observe an
-// intermediate state where openIds references a missing file.
+// Delete a project and its files. All state mutations complete before
+// any `file:deleted` events so subscribers never observe an intermediate
+// state where openIds references a missing file.
 export async function deleteProject(id) {
   const project = Store.projects.get(id);
   if (!project) return null;
@@ -214,6 +231,7 @@ export async function deleteProject(id) {
   Store.openIds = Store.openIds.filter(fid => !removedIds.has(fid));
   if (!Store.openIds.includes(Store.activeId)) Store.activeId = Store.openIds[0] || null;
   Store.projects.delete(id);
+  if (Store.lastActiveProjectId === id) Store.lastActiveProjectId = null;
 
   await Promise.all([
     ...filesToRemove.map(f => DB.del('files', f.id)),
@@ -258,7 +276,7 @@ export async function restoreProject(snapshot) {
   for (const f of files) Store.emit('file:created', { file: Store.files.get(f.id) });
 }
 
-export async function reorderProjects(newOrder /* optional: array of ids */) {
+export async function reorderProjects(newOrder) {
   const list = newOrder
     ? newOrder.map(id => Store.projects.get(id)).filter(Boolean)
     : Store.projectList();
@@ -267,7 +285,7 @@ export async function reorderProjects(newOrder /* optional: array of ids */) {
   Store.emit('projects:reordered');
 }
 
-// ---- Files --------------------------------------------------------------
+// ── Files ────────────────────────────────────────────────────────────
 
 export async function createFile({ projectId, name = DEFAULT_FILE_NAME, content = '', emit = true } = {}) {
   if (!Store.projects.get(projectId)) throw new Error('Unknown project');
@@ -290,9 +308,11 @@ export async function createFile({ projectId, name = DEFAULT_FILE_NAME, content 
   return file;
 }
 
-// Rename a file. On sibling-name collision, auto-uniquifies (`foo.md` →
-// `foo 2.md`) and fires `file:rename-collision` so the UI can notify.
-// Returns the committed name.
+/**
+ * Rename a file. On sibling-name collision, auto-uniquifies (`foo.md` →
+ * `foo 2.md`) and emits `file:rename-collision` so the UI can notify.
+ * @returns {Promise<string|null>} the committed name, or null if missing.
+ */
 export async function renameFile(id, name) {
   const f = Store.files.get(id);
   if (!f) return null;
@@ -381,7 +401,7 @@ export async function restoreFile(snapshot) {
   return Store.files.get(file.id);
 }
 
-// Writes file content + marks clean; callers should debounce this in the UI.
+/** Persist content + clear dirty. Callers should debounce from the UI. */
 export async function saveFileContent(id, content, { cursor, scrollEditor, scrollPreview } = {}) {
   const f = Store.files.get(id);
   if (!f) return;
@@ -417,7 +437,7 @@ export async function moveFile(fileId, targetProjectId, targetIndex) {
   const fromProjectId = f.projectId;
   f.projectId = targetProjectId;
 
-  // Reorder targets, inserting at targetIndex.
+  // Reorder target, inserting at targetIndex.
   const targetList = Store.filesIn(targetProjectId).filter(x => x.id !== fileId);
   const clampedIdx = Math.max(0, Math.min(targetIndex, targetList.length));
   targetList.splice(clampedIdx, 0, f);
@@ -434,7 +454,7 @@ export async function moveFile(fileId, targetProjectId, targetIndex) {
   Store.emit('files:reordered', { projectId: fromProjectId });
 }
 
-// ---- Tabs / session -----------------------------------------------------
+// ── Tabs / session ───────────────────────────────────────────────────
 
 export async function closeFile(id) {
   const idx = Store.openIds.indexOf(id);
@@ -451,6 +471,9 @@ export async function activateFile(id) {
   if (!Store.files.has(id)) return;
   if (!Store.openIds.includes(id)) Store.openIds.push(id);
   Store.activeId = id;
+  // Activating a file implicitly focuses its project.
+  const file = Store.files.get(id);
+  if (file) Store.lastActiveProjectId = file.projectId;
   await persistSession();
   Store.emit('tab:activated', { id });
 }
@@ -465,13 +488,16 @@ async function persistSession() {
   await Promise.all([
     DB.sessionSet('openIds', Store.openIds),
     DB.sessionSet('activeId', Store.activeId),
+    DB.sessionSet('lastActiveProjectId', Store.lastActiveProjectId),
   ]);
 }
 
-// ---- Search -------------------------------------------------------------
+// ── Search ───────────────────────────────────────────────────────────
 
-// Fuzzy subsequence match with positional scoring. Lightweight enough to run
-// per-keystroke on thousands of files without instrumentation.
+/**
+ * Fuzzy subsequence match with positional scoring. Light enough to run
+ * per-keystroke across thousands of files.
+ */
 export function fuzzyScore(needle, haystack) {
   if (!needle) return 1;
   const n = needle.toLowerCase();
@@ -490,7 +516,7 @@ export function fuzzyScore(needle, haystack) {
     }
   }
   if (ni < n.length) return 0;
-  // Shorter matches rank higher so "rfc" beats "reference.md" on input "rfc".
+  // Shorter matches rank higher: "rfc" beats "reference.md" on "rfc".
   return score / (1 + h.length - n.length);
 }
 
@@ -510,7 +536,7 @@ export function searchFiles(query) {
   return results.sort((a, b) => b.score - a.score).slice(0, 50);
 }
 
-// ---- Utilities ----------------------------------------------------------
+// ── Utilities ────────────────────────────────────────────────────────
 
 function ensureMdExt(name) {
   return /\.(md|markdown|txt)$/i.test(name) ? name : `${name}.md`;

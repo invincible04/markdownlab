@@ -1,24 +1,22 @@
 /**
- * MarkdownLab service worker — offline cache.
+ * MarkdownLab service worker.
  *
  * Routing:
- *   HTML navigation   → network-first, falls back to cached /index.html
- *   Same-origin asset → cache-first, ignoreSearch so `?v=N` cache-busts
- *                       still hit the versionless precached entry
- *   Pinned CDN asset  → cache-first (URLs version-pinned in the path)
- *   Everything else   → pass-through (don't bloat the cache)
+ *   HTML navigation   → network-first, cached /index.html as offline fallback
+ *   Same-origin asset → cache-first, ignoreSearch so `?v=N` busts still hit
+ *   Pinned CDN asset  → cache-first (URLs path-version-pinned)
+ *   Everything else   → pass-through
  *
- * Bump CACHE_VERSION on any change to SHELL, CDN_PRECACHE, or routing.
+ * Bump CACHE_VERSION on any change to SHELL, CDN_PRECACHE, or routing —
  * activate() purges every cache whose name doesn't match.
  */
 
-const CACHE_VERSION = 'markdownlab-v5';
+const CACHE_VERSION = 'markdownlab-v6';
 
-// Pre-cached on install so the first offline visit works even if the
-// user has never fetched a given asset before.
 const SHELL = [
   '/',
   '/index.html',
+  '/css/tokens.css',
   '/css/styles.css',
   '/css/mobile.css',
   '/js/app.js',
@@ -29,6 +27,9 @@ const SHELL = [
   '/js/tabs.js',
   '/js/utils.js',
   '/js/examples.js',
+  '/js/frontmatter.js',
+  '/js/math.js',
+  '/js/overlays.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -36,8 +37,8 @@ const SHELL = [
   '/og-image.png',
 ];
 
-// Keep in sync with <script>/<link> tags in index.html and dynamic
-// imports in app.js (mermaid).
+// Keep in sync with <script>/<link> tags in index.html and the mermaid
+// dynamic import in app.js.
 const CDN_PRECACHE = [
   'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js',
   'https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@3.1.3/lib/index.umd.js',
@@ -46,14 +47,13 @@ const CDN_PRECACHE = [
   'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js',
   'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js',
   'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css',
-  'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs',
+  'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs',
   'https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css',
   'https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-light.min.css',
 ];
 
-// Runtime prefix match for version-pinned CDNs. Mermaid lazy-loads
-// diagram-type chunks (e.g. mermaid@10.9.1/dist/chunks/flowchart-<hash>.mjs)
-// that can't be enumerated up front.
+// Runtime prefix match — mermaid lazy-loads per-diagram chunks that can't
+// be enumerated at install time.
 const CDN_PREFIXES = [
   'https://cdn.jsdelivr.net/npm/marked@',
   'https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@',
@@ -74,16 +74,14 @@ const OFFLINE_FALLBACK =
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_VERSION);
-    // SHELL: CORS responses so cache.match can inspect content types.
-    // CDN: no-cors so opaque responses from non-CORS hosts still cache.
+    // SHELL uses CORS so cache.match can read content types; CDN uses
+    // no-cors so opaque responses from non-CORS hosts still cache.
     await cache.addAll(SHELL);
     await Promise.allSettled(
       CDN_PRECACHE.map((url) =>
         cache.add(new Request(url, { mode: 'no-cors' })).catch(() => null)
       )
     );
-    // First install auto-activates (no existing controller). Subsequent
-    // updates wait for the app's SKIP_WAITING message.
   })());
 });
 
@@ -93,12 +91,10 @@ self.addEventListener('activate', (event) => {
     await Promise.all(
       names.filter((n) => n !== CACHE_VERSION).map((n) => caches.delete(n))
     );
-    // Take control of pages that loaded before this SW activated.
     await self.clients.claim();
   })());
 });
 
-// Lets the app trigger activation of a waiting SW.
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
@@ -114,15 +110,13 @@ self.addEventListener('fetch', (event) => {
 
   const isSameOrigin = new URL(req.url).origin === self.location.origin;
   const isPinnedCdn = CDN_PREFIXES.some((p) => req.url.startsWith(p));
-
   if (isSameOrigin || isPinnedCdn) {
     event.respondWith(cacheFirst(req));
   }
-  // Other origins: pass through uncached.
 });
 
-// HTML: network-first so deploys are visible when online; cached shell
-// is the offline fallback.
+// Network-first so deploys are visible when online; cached shell is the
+// offline fallback.
 async function networkFirstShell(req) {
   const cache = await caches.open(CACHE_VERSION);
   try {
@@ -140,7 +134,7 @@ async function networkFirstShell(req) {
 }
 
 // Cache-first with background revalidation. Same-origin matches ignore
-// search so `?v=N` busts still hit the versionless entry; CDN URLs are
+// search so `?v=N` busts hit the versionless entry; CDN URLs are
 // path-pinned so exact match is correct.
 async function cacheFirst(req) {
   const cache = await caches.open(CACHE_VERSION);
@@ -148,7 +142,6 @@ async function cacheFirst(req) {
   const cached = await cache.match(req, { ignoreSearch: isSameOrigin });
 
   if (cached) {
-    // Background revalidate — don't await, don't surface errors.
     fetch(req)
       .then((fresh) => { if (fresh?.ok) cache.put(req, fresh).catch(() => {}); })
       .catch(() => {});

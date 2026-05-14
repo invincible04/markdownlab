@@ -51,10 +51,12 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="modulepreload" href="js/app.js?v=5" />
-  <link rel="stylesheet" href="css/styles.css?v=5" />
+  <link rel="modulepreload" href="js/app.js?v=15" />
+  <!-- tokens.css first — defines all CSS custom properties used by the rest. -->
+  <link rel="stylesheet" href="css/tokens.css?v=15" />
+  <link rel="stylesheet" href="css/styles.css?v=15" />
   <!-- mobile.css last so @media rules win the cascade. -->
-  <link rel="stylesheet" href="css/mobile.css?v=5" />
+  <link rel="stylesheet" href="css/mobile.css?v=15" />
 
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Lora:ital,wght@0,400..700;1,400..700&display=swap" />
 
@@ -789,6 +791,6 @@
   <!-- katex auto-render.min.js omitted — our pipeline extracts $…$ /
        $$…$$ and calls katex.renderToString directly. -->
 
-  <script type="module" src="js/app.js?v=5"></script>
+  <script type="module" src="js/app.js?v=15"></script>
 </body>
 </html>

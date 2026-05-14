@@ -1,10 +1,12 @@
-/* MarkdownLab — design tokens + component styles */
+/* MarkdownLab — component styles
+ * Design tokens live in tokens.css (loaded before this file).
+ * This file contains layout, components, and theme-adaptive overrides only. */
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
   margin: 0;
-  font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
   color: var(--text);
   background:
@@ -26,105 +28,8 @@ input, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Structural tokens — layout must not shift on theme change */
-:root {
-  --topbar-h: 56px;
-  --statusbar-h: 32px;
-
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
-
-  --font-body: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-read: 'Lora', Georgia, 'Times New Roman', serif;
-
-  /* Rendered-markdown text metrics. Single source of truth — the mermaid
-     sandbox (#mermaid-sandbox in app.js) and .lightbox__canvas mirror these
-     so htmlLabel measurement and render share one font context. */
-  --md-body-font-size:   15.5px;
-  --md-body-line-height: 1.7;
-
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --t-fast: 120ms;
-  --t-base: 180ms;
-  --t-slow: 280ms;
-}
-
-:root[data-theme='dark'] {
-  --bg:          #0b0d12;
-  --bg-elev-1:   #10131a;
-  --bg-elev-2:   #161a23;
-  --bg-elev-3:   #1c212c;
-  --surface:     #0f1219;
-  --border:      #242a38;
-  --border-strong: #323a4d;
-  --text:        #e5e7eb;
-  --text-muted:  #9aa3b2;
-  --text-dim:    #8892a5;
-
-  --accent:      #10b981;
-  --accent-a:    #059669;
-  --accent-b:    #0891b2;
-  --accent-soft: rgba(16, 185, 129, 0.14);
-  --accent-ring: rgba(16, 185, 129, 0.35);
-
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger:  #ef4444;
-
-  --code-bg:     #0f1419;
-  --code-border: #243244;
-  --code-inline-bg: #1a2332;
-  --kbd-bg:      #1a2332;
-
-  --mermaid-bg:  #0f1a1d;
-
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
-  --shadow-lg: 0 16px 48px rgba(0,0,0,0.5);
-}
-
-:root[data-theme='light'] {
-  --bg:          #f7f8fb;
-  --bg-elev-1:   #ffffff;
-  --bg-elev-2:   #ffffff;
-  --bg-elev-3:   #f1f3f8;
-  --surface:     #ffffff;
-  --border:      #e5e7ec;
-  --border-strong: #cfd4df;
-  --text:        #0f172a;
-  --text-muted:  #475569;
-  --text-dim:    #64748b;
-
-  --accent:      #0d9488;
-  --accent-a:    #059669;
-  --accent-b:    #0e7490;
-  --accent-soft: rgba(13, 148, 136, 0.1);
-  --accent-ring: rgba(13, 148, 136, 0.3);
-
-  --success: #16a34a;
-  --warning: #d97706;
-  --danger:  #dc2626;
-
-  --code-bg:     #f6f8fa;
-  --code-border: #d0d7de;
-  --code-inline-bg: #eef1f6;
-  --kbd-bg:      #eef1f6;
-
-  --mermaid-bg:  #ffffff;
-
-  --shadow-sm: 0 1px 2px rgba(15,23,42,0.06);
-  --shadow-md: 0 4px 12px rgba(15,23,42,0.08);
-  --shadow-lg: 0 16px 48px rgba(15,23,42,0.15);
-}
-
-:root { color-scheme: dark; }
-:root[data-theme='light'] { color-scheme: light; }
 body, .topbar, .pane, .pane__header, .statusbar, .dropdown__menu, .editor, .preview, .segmented {
-  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+  transition: background-color var(--t-base) ease, border-color var(--t-base) ease, color var(--t-base) ease;
 }
 
 body {
@@ -139,7 +44,7 @@ body > .statusbar { grid-row: 3; }
 
 /* Shell: sidebar | workspace. CSS variable drives resizability. */
 .shell {
-  --sidebar-width: 280px;
+  --sidebar-width: var(--sidebar-width-default);
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
   min-height: 0;
@@ -209,12 +114,14 @@ body > .statusbar { grid-row: 3; }
 }
 .topbar__title-brand {
   display: inline-block;
-  font-size: 15px; font-weight: 700; letter-spacing: -0.015em;
-  margin: 0; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: linear-gradient(180deg, var(--text), color-mix(in srgb, var(--text) 78%, transparent));
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .topbar__subtitle {
   display: inline-flex; align-items: center; gap: 6px;
@@ -227,9 +134,23 @@ body > .statusbar { grid-row: 3; }
   width: 6px; height: 6px;
   border-radius: 50%;
   background: var(--success);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent);
-  animation: save-pulse 2.4s ease-out infinite;
+  position: relative;
   flex-shrink: 0;
+}
+.topbar__subtitle { position: relative; }
+.topbar__subtitle::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 50%;
+  width: 6px; height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--success) 55%, transparent);
+  transform: scale(1);
+  opacity: 0.6;
+  animation: save-pulse-ring 2.4s ease-out infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
 }
 .topbar__subtitle-name {
   color: var(--text);
@@ -250,13 +171,13 @@ body > .statusbar { grid-row: 3; }
 }
 .topbar__subtitle-state[data-state='dirty'] { color: var(--accent); }
 .topbar__subtitle-state[data-state='error'] { color: var(--danger, #ef4444); }
-@keyframes save-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent); }
-  60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent); }
+@keyframes save-pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.55; }
+  60%  { transform: scale(3.3); opacity: 0; }
+  100% { transform: scale(3.3); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .topbar__subtitle::before { animation: none; }
+  .topbar__subtitle::after { animation: none; opacity: 0; }
 }
 .topbar__nav { display: flex; justify-content: center; }
 .topbar__actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
@@ -1130,12 +1051,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 .pane__toggle[aria-pressed='false'] {
   color: var(--text-muted);
-  text-decoration: line-through;
-  text-decoration-color: currentColor;
-  text-decoration-thickness: 1px;
 }
+.pane__toggle[aria-pressed='false']:hover { color: var(--text); }
 .pane__toggle[aria-pressed='false'] .pane__toggle-icon {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .resizer {
@@ -1194,7 +1113,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .editor__gutter-inner {
   position: relative;
   width: 100%;
-  will-change: transform;
+  /* will-change toggled by JS during scroll only; see markScrollingActive() */
 }
 .editor__gutter-num {
   position: absolute;
@@ -1251,7 +1170,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   color: transparent;
   pointer-events: none;
   z-index: 0;
-  will-change: transform;
+  /* will-change toggled by JS during scroll only; see markScrollingActive() */
 }
 .editor__mirror > div { min-height: 1.65em; }
 /* Find-match highlights. Hue matches mark.find-match so both panes read
@@ -1618,33 +1537,49 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .statusbar__group:last-child { justify-content: flex-end; }
 
 .status-dot {
+  position: relative;
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--success);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent);
   transition: background var(--t-base) var(--ease-out), box-shadow var(--t-base) var(--ease-out);
-  animation: status-breathe 3s ease-in-out infinite;
+}
+/* Breathing ring: pseudo-element with compositor-accelerated transform/opacity. */
+.status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--success) 30%, transparent);
+  transform: scale(1);
+  opacity: 0.6;
+  animation: status-breathe-ring 3s ease-in-out infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
 }
 .status-dot[data-status='busy'] {
   background: var(--warning);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 25%, transparent);
-  animation: status-spin 1.4s linear infinite;
+}
+.status-dot[data-status='busy']::after {
+  background: color-mix(in srgb, var(--warning) 38%, transparent);
+  animation: status-busy-ring 1.4s linear infinite;
 }
 .status-dot[data-status='error'] {
   background: var(--danger);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent);
-  animation: none;
 }
-@keyframes status-breathe {
-  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent); }
-  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 30%, transparent); }
+.status-dot[data-status='error']::after { animation: none; opacity: 0; }
+@keyframes status-breathe-ring {
+  0%, 100% { transform: scale(0.85); opacity: 0.45; }
+  50%      { transform: scale(1.35); opacity: 0.15; }
 }
-@keyframes status-spin {
-  0%   { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 12%, transparent); }
-  50%  { box-shadow: 0 0 0 5px color-mix(in srgb, var(--warning) 38%, transparent); }
-  100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 12%, transparent); }
+@keyframes status-busy-ring {
+  0%   { transform: scale(0.85); opacity: 0.3; }
+  50%  { transform: scale(1.5);  opacity: 0;   }
+  100% { transform: scale(0.85); opacity: 0.3; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .status-dot { animation: none !important; }
+  .status-dot::after { animation: none !important; opacity: 0; }
 }
 
 .stat {
@@ -1879,14 +1814,16 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 
 .markdown-body pre {
   margin: 0 0 18px;
-  padding: 16px 18px;
+  /* Scroll context lives on the inner <code>, not the pre, so .code-copy
+     stays pinned during horizontal scroll. Hence h-padding on <code>. */
+  padding: 16px 0;
   background:
     linear-gradient(180deg,
       color-mix(in srgb, var(--code-bg) 100%, transparent),
       color-mix(in srgb, var(--code-bg) 96%, var(--accent) 4%));
   border: 1px solid var(--code-border);
   border-radius: var(--radius-md);
-  overflow-x: auto;
+  overflow: hidden;
   font-size: 13px;
   line-height: 1.55;
   position: relative;
@@ -1903,9 +1840,12 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   opacity: 0.45;
 }
 .markdown-body pre:has(.code-lang)::before { top: 38px; }
-.markdown-body pre code {
+.markdown-body pre > code {
+  display: block;
+  padding: 0 18px;
+  overflow-x: auto;
   font-family: var(--font-mono);
-  background: transparent; padding: 0; border: 0;
+  background: transparent; border: 0;
   color: inherit;
 }
 
@@ -1926,15 +1866,22 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   transition: opacity var(--t-base) var(--ease-out), color var(--t-fast) var(--ease-out);
   pointer-events: none;
   user-select: none;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+}
+/* Gate backdrop-filter to fine-pointer devices: avoids offscreen composite cost on touch. */
+@media (hover: hover) and (pointer: fine) {
+  .markdown-body pre > .code-lang {
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
 }
 .markdown-body pre:hover .code-lang { opacity: 1; }
 
-/* Always visible (softer in idle, pops on hover) so touch users can see it. */
+/* Pinned to the pre (position:absolute). Scroll context is the inner
+   <code>, so horizontal scroll never drags this button. Near-opaque bg
+   so scrolled code beneath it is clearly occluded. */
 .code-copy {
   position: absolute; top: 8px; right: 8px;
-  background: color-mix(in srgb, var(--bg-elev-3) 80%, transparent);
+  background: color-mix(in srgb, var(--bg-elev-3) 96%, transparent);
   border: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 11px; font-weight: 500;
@@ -1949,6 +1896,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   font-family: var(--font-body);
   backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   display: inline-flex; align-items: center; gap: 5px;
+  z-index: 1;
 }
 .markdown-body pre:hover .code-copy,
 .code-copy:focus-visible { opacity: 1; }
@@ -2090,6 +2038,32 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
 }
 
+/* Raw-YAML fallback for unparseable frontmatter (see renderFrontmatterRaw).
+   Reuses the code-block shell; the warning accent marks the degradation. */
+.markdown-body pre.markdown-frontmatter-raw {
+  padding-top: 38px;
+}
+.markdown-body pre.markdown-frontmatter-raw::before {
+  top: 38px;
+  background: linear-gradient(180deg, var(--warning), color-mix(in srgb, var(--warning) 50%, var(--accent-b)));
+  opacity: 0.55;
+}
+.markdown-body pre.markdown-frontmatter-raw::after {
+  content: 'frontmatter · raw';
+  position: absolute;
+  top: 8px; left: 14px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--warning) 80%, var(--text-muted));
+  opacity: 0.75;
+  pointer-events: none;
+}
+.markdown-body pre.markdown-frontmatter-raw > code {
+  color: var(--text);
+}
+
 .markdown-body img {
   max-width: 100%; height: auto;
   border-radius: var(--radius-md);
@@ -2117,7 +2091,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .markdown-body .footnotes ol { padding-left: 24px; }
 .markdown-body .footnotes li { margin-bottom: 6px; }
 
-.markdown-body .hljs { background: transparent !important; padding: 0 !important; }
+/* Beat the hljs CDN theme (loads after us). It sets `pre code.hljs`
+   background + padding; we null the bg and restore our own padding. */
+.markdown-body .hljs { background: transparent !important; }
+.markdown-body pre > code.hljs { padding: 0 18px !important; }
 
 .markdown-body .mermaid {
   position: relative;
@@ -2158,88 +2135,99 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskText,
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskTextOutsideRight,
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .taskTextOutsideLeft {
-  fill: #f1f5f9 !important;
+  fill: var(--mermaid-fg-strong) !important;
   font-weight: 500;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .sectionTitle {
-  fill: #f1f5f9 !important;
+  fill: var(--mermaid-fg-strong) !important;
   font-weight: 600;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .grid .tick line {
-  stroke: #2d3548;
+  stroke: var(--mermaid-grid);
   stroke-opacity: 0.8;
 }
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .grid path { stroke: #3b4458; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .grid path { stroke: var(--mermaid-grid-path); }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .tick text {
-  fill: #94a3b8 !important;
+  fill: var(--mermaid-tick-text) !important;
   font-size: 10.5px;
 }
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .titleText { fill: #f8fafc !important; }
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .today { stroke: #f87171; stroke-width: 2; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .titleText { fill: var(--mermaid-fg-strong) !important; }
+:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .today { stroke: var(--danger); stroke-width: 2; }
 
 /* ER diagrams — Mermaid ships light attribute-row fills that make our
    near-white text invisible. Force dark row fills + bright attribute text. */
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.entityBox {
-  fill: #059669;
-  stroke: #6ee7b7;
+  fill: var(--accent-a);
+  stroke: color-mix(in srgb, var(--accent) 60%, white);
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.entityLabel {
-  fill: #ffffff !important;
+  fill: var(--text-on-accent) !important;
   font-weight: 600;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxOdd {
-  fill: #1e2533 !important;
-  stroke: #475569 !important;
+  fill: var(--bg-elev-2) !important;
+  stroke: var(--border-strong) !important;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxEven {
-  fill: #232a3d !important;
-  stroke: #475569 !important;
+  fill: var(--bg-elev-3) !important;
+  stroke: var(--border-strong) !important;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxOdd text,
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.attributeBoxEven text,
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.relationshipLabel {
-  fill: #f1f5f9 !important;
+  fill: var(--mermaid-fg-strong) !important;
 }
 :root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .er.relationshipLabelBox {
-  fill: #1e293b !important;
+  fill: var(--mermaid-edge-bg-2) !important;
   stroke: none;
 }
 
 /* Node & label text colouring is driven by a luminance-aware post-render
    pass in JS (see applyMermaidContrast in app.js) which inspects each
-   node's actual fill and chooses #0f172a or #f8fafc for >= 4.5:1 contrast.
+   node's actual fill and chooses a bright/dark neutral for >= 4.5:1 contrast.
    This handles theme defaults AND user-authored `style X fill:#...`
    directives where blanket white text used to be illegible on light fills.
 
    The rules below are fallback-only: they apply when the JS pass has not
    (yet) annotated a node (e.g. during initial paint, or for state/sequence
    diagrams that don't emit .node wrappers). They use regular (non-important)
-   declarations so the JS-set inline styles always win. */
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup text,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup .state-title {
-  fill: #f8fafc;
+   declarations so the JS-set inline styles always win. Note: applied in
+   BOTH themes so pre-contrast-pass paint isn't invisible in light mode either. */
+:is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup text,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.stateGroup .state-title {
+  fill: var(--mermaid-fg-strong);
 }
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) text,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .nodeLabel,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .label,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) foreignObject div {
-  fill: #f8fafc;
-  color: #f8fafc;
+:is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) text,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .nodeLabel,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) .label,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.node:not([data-mdlab-contrast]) foreignObject div {
+  fill: var(--mermaid-fg-strong);
+  color: var(--mermaid-fg-strong);
 }
 
-/* Edge-label pill: slate-800 background + slate-100 text is 12.6:1 AA+.
-   Fallback for unannotated labels; JS pass overrides with per-edge values
-   when needed (edges inherit page bg). */
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]),
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) rect,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) foreignObject div {
-  background-color: #1e293b;
-  fill: #1e293b;
-  color: #f1f5f9;
+/* Cluster / subgraph labels. Mermaid often renders the title in <text>
+   directly at the top of a .cluster <g>; without a fill override it picks
+   up the SVG default (#000) — invisible in dark mode until the JS pass. */
+:is(.markdown-body .mermaid, .lightbox__canvas) g.cluster:not([data-mdlab-contrast]) text,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.cluster:not([data-mdlab-contrast]) .cluster-label text,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.cluster:not([data-mdlab-contrast]) .nodeLabel,
+:is(.markdown-body .mermaid, .lightbox__canvas) g.cluster:not([data-mdlab-contrast]) foreignObject div {
+  fill: var(--mermaid-fg-strong);
+  color: var(--mermaid-fg-strong);
 }
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) span,
-:root[data-theme='dark'] :is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) p {
-  color: #f1f5f9;
+
+/* Edge-label pill fallback. JS pass overrides with per-edge values when
+   needed (edges inherit the diagram canvas bg). Applied in both themes. */
+:is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]),
+:is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) rect,
+:is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) foreignObject div {
+  background-color: var(--mermaid-edge-bg-2);
+  fill: var(--mermaid-edge-bg-2);
+  color: var(--mermaid-fg-strong);
+}
+:is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) span,
+:is(.markdown-body .mermaid, .lightbox__canvas) .edgeLabel:not([data-mdlab-contrast]) p {
+  color: var(--mermaid-fg-strong);
   background: transparent;
 }
 
@@ -2323,7 +2311,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .mermaid-error__line {
   display: flex;
   align-items: baseline;
-  gap: 14px;
+  gap: 12px;
   white-space: pre;
 }
 .mermaid-error__line.is-bad {
@@ -2338,10 +2326,17 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   color: color-mix(in srgb, var(--text-muted) 65%, transparent);
   user-select: none;
   text-align: right;
-  min-width: 2ch;
+  min-width: 2.5ch;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  padding-left: 5px;
+  padding-right: 10px;
+  border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
-.mermaid-error__line.is-bad .mermaid-error__ln { color: var(--danger); }
+.mermaid-error__line.is-bad .mermaid-error__ln {
+  color: var(--danger);
+  border-right-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
 .mermaid-error__code { white-space: pre; }
 .mermaid-error__copy {
   appearance: none;
@@ -2525,11 +2520,13 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 .empty-state__title {
   margin: 0 0 8px;
-  font-size: 26px; font-weight: 800;
+  font-size: 26px;
+  font-weight: 800;
   letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent; color: transparent;
+  color: var(--text);
+  /* No background-clip: text — that pattern breaks under browser
+     extensions, print, and selection. Solid colour is readable in every
+     theme, extension, and screenshot. */
 }
 .empty-state__subtitle {
   margin: 0 0 22px;
@@ -2892,6 +2889,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 @media (hover: hover) {
   .project:hover .project__actions { opacity: 1; pointer-events: auto; }
 }
+/* Touch: no hover — keep row actions reachable via tap. */
+@media (hover: none) {
+  .project__actions { opacity: 1; pointer-events: auto; }
+}
 .project__action {
   display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
@@ -2982,6 +2983,10 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 .file.is-active .file__actions { opacity: 1; pointer-events: auto; }
 @media (hover: hover) {
   .file:hover .file__actions { opacity: 1; pointer-events: auto; }
+}
+/* Touch: no hover — keep row actions reachable via tap. */
+@media (hover: none) {
+  .file__actions { opacity: 1; pointer-events: auto; }
 }
 .file__action {
   display: inline-flex; align-items: center; justify-content: center;
@@ -3459,6 +3464,13 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   .markdown-body pre, .markdown-body code:not(pre > code) {
     background: #f5f5f5 !important; border-color: #ddd !important; color: #000 !important;
   }
+  /* Print must wrap: overflow:auto/hidden would clip off-paper content. */
+  .markdown-body pre { overflow: visible !important; }
+  .markdown-body pre > code {
+    overflow: visible !important;
+    white-space: pre-wrap !important;
+    word-break: break-word;
+  }
   .markdown-body blockquote { background: #f5f5f5; color: #333; }
   .markdown-body .mermaid { background: #fff; border-color: #ddd; }
   .markdown-body h1, .markdown-body h2 { border-color: #ddd; }
@@ -3544,7 +3556,55 @@ button:disabled.find-bar__toggle {
 .file--empty {
   color: var(--text-dim);
   cursor: default;
-  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.file--empty:hover { background: transparent; color: var(--text-dim); }
+.file--empty__text { display: inline; }
+.file--empty__kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin: 0 1px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-elev-3) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-dim) 18%, transparent);
+  border-radius: 4px;
+  vertical-align: baseline;
+}
+.file--empty__link {
+  appearance: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-bottom: 1px dotted color-mix(in srgb, var(--text-dim) 45%, transparent);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+.file--empty__link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  border-bottom-style: solid;
+}
+.file--empty__link:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Subtle focus ring on the project the user is currently acting on. */
+.project.is-focused > .project__header {
+  background: color-mix(in srgb, var(--project-color, var(--accent)) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--project-color, var(--accent));
 }
 
 .toast.has-action {

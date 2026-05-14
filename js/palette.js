@@ -242,7 +242,7 @@ function onKeydown(e) {
 }
 
 async function createQuickFile(name) {
-  const active = Store.activeProject() || Store.projectList()[0];
+  const active = Store.focusedProject();
   if (!active) return;
   const finalName = uniqueFileName(active.id, name);
   const f = await createFile({ projectId: active.id, name: finalName, content: '' });

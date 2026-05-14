@@ -1,19 +1,15 @@
-/* MarkdownLab — sidebar UI for projects + files.
+/**
+ * Sidebar UI for projects + files.
  *
- * Renders a two-level tree: projects → files. Handles:
- *   · click to open a file (delegates to the tabs/editor layer via callbacks)
- *   · inline rename (double-click / F2 / context menu)
- *   · new project / new file / delete / duplicate
- *   · drag-and-drop (files within a project, files across projects,
- *     project reorder)
- *   · search-as-you-type with inline match highlighting
- *   · collapsible project sections with persisted state (in DB)
- *   · resize handle with keyboard support
- *   · mobile drawer open/close
+ * Two-level tree (projects → files). Handles click-to-open, inline
+ * rename (dblclick / F2 / context menu), create/delete/duplicate,
+ * drag-reorder (within + across projects, plus project reorder),
+ * search-as-you-type with highlighting, collapsible sections (persisted),
+ * resize handle with keyboard support, mobile drawer.
  *
- * Subscribes to Store events and re-renders the affected section; the whole
- * tree is cheap to rebuild (usually < 1 ms on < 500 files), so we just
- * rebuild on every mutation rather than maintaining partial-update logic.
+ * Subscribes to Store events and rebuilds the affected section. Full
+ * tree rebuild is cheap (<1ms for <500 files), so we skip partial-
+ * update machinery.
  */
 
 import {
@@ -26,8 +22,7 @@ import { DB, onBlocked } from './db.js';
 import { escapeHtml, cssEscape } from './utils.js';
 
 // Default width lives in CSS (`--sidebar-width`); JS only clamps manual
-// resizes. WIDE_QUERY must match the `@media (max-width: 880px)` boundary
-// in styles.css.
+// resizes. WIDE_QUERY matches the 880px breakpoint in styles.css.
 const SIDEBAR_MIN = 220;
 const SIDEBAR_MAX = 520;
 const WIDE_QUERY = '(min-width: 881px)';
@@ -57,8 +52,8 @@ export async function initSidebar(callbacks = {}) {
     resizer:     document.getElementById('sidebar-resizer'),
   };
 
-  // Await saved sidebar width/collapsed state BEFORE the first render so the
-  // UI doesn't flash with the default then jump to the stored width.
+  // Restore width/collapsed BEFORE first render so the UI doesn't flash
+  // at the default width and jump to the stored size.
   await restoreSidebarState();
   bindControls();
   bindResize();
@@ -73,6 +68,10 @@ export async function initSidebar(callbacks = {}) {
     }
     if (kind === 'file:dirty' || kind === 'file:saved') {
       renderDirtyMarkers();
+      return;
+    }
+    if (kind === 'project:focused') {
+      renderFocusedProject();
       return;
     }
     render();
@@ -102,8 +101,8 @@ async function restoreSidebarState() {
   if (els.storageLbl) els.storageLbl.textContent = useIdb ? 'Local' : 'Local (fallback)';
 
   onBlocked((err) => {
-    // Blocked state wins over usage indicator — stop updating the label once
-    // we can't talk to IDB, since any numbers would be misleading.
+    // Blocked state wins — once we can't talk to IDB, any usage numbers
+    // are stale, so freeze the label.
     _storageCtx.blocked = true;
     if (els.storageLbl) {
       els.storageLbl.textContent = 'Local (blocked)';
@@ -119,7 +118,7 @@ async function restoreSidebarState() {
   initStorageIndicator({ useIdb });
 }
 
-// Storage indicator: compact footer label backed by navigator.storage.estimate(),
+// Compact storage-footer indicator backed by navigator.storage.estimate(),
 // throttled to avoid thrashing on bursty saves.
 
 const STORAGE_WARN_RATIO = 0.8;
@@ -134,17 +133,17 @@ let _storagePending = false;
 function initStorageIndicator({ useIdb }) {
   _storageCtx.useIdb = useIdb;
 
-  // Ask browsers to make IndexedDB persistent so data isn't evicted under
-  // storage pressure. Many browsers grant silently when the site is engaged
-  // (bookmarked, frequently visited, PWA-installed); denial is fine and we
-  // just reflect that in the tooltip.
+  // Opportunistically upgrade IDB to persistent storage so data isn't
+  // evicted under pressure. Browsers grant silently for engaged sites
+  // (bookmarked / PWA-installed); denial is fine — we reflect it in the
+  // tooltip.
   if (useIdb) tryRequestPersist();
 
   scheduleStorageUpdate({ immediate: true });
 
   Store.on((kind) => {
-    // Recompute on events that change on-disk volume or counts. We ignore
-    // high-frequency, pure-UI events (tab activation, dirty markers) to avoid
+    // Recompute on events that change on-disk volume or counts. Ignore
+    // high-frequency UI events (tab activation, dirty markers) to avoid
     // thrashing navigator.storage.estimate().
     const relevant =
       kind === 'file:saved' ||
@@ -170,7 +169,7 @@ async function tryRequestPersist() {
       _storageCtx.persisted = await navigator.storage.persist();
     }
   } catch {
-    // Ignore — some browsers throw in insecure contexts or private mode.
+    // Some browsers throw in insecure contexts or private mode.
   }
 }
 
@@ -199,7 +198,7 @@ function scheduleStorageUpdate({ immediate = false } = {}) {
 async function runStorageUpdate() {
   _storageLastRun = performance.now();
   if (!els.storageLbl) return;
-  // Once the DB is blocked any estimate or count is stale/misleading, so the
+  // Once the DB is blocked, any estimate or count is stale — the
   // onBlocked handler owns the label from that point on.
   if (_storageCtx.blocked) return;
 
@@ -216,8 +215,8 @@ async function runStorageUpdate() {
     }
   } catch {}
 
-  // Fallback: derive an approximate byte count from in-memory content lengths
-  // when the Storage API is unavailable (older Safari, insecure contexts).
+  // Fallback for older Safari / insecure contexts where the Storage API
+  // is unavailable: approximate from in-memory content lengths.
   if (usage == null) usage = approximateLocalBytes();
 
   applyStorageView({ usage, quota, projectCount, fileCount });
@@ -228,7 +227,7 @@ function approximateLocalBytes() {
   for (const f of Store.files.values()) {
     bytes += (f.name?.length || 0) + (f.content?.length || 0);
   }
-  // Rough UTF-8 overhead; good enough for a fallback label.
+  // Rough UTF-8 overhead — only used as a fallback approximation.
   return Math.round(bytes * 1.2);
 }
 
@@ -285,16 +284,16 @@ function formatBytes(n) {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 
-// Clean up scrim on media-query change so a stale drawer scrim doesn't
-// linger when the window resizes narrow→wide.
+// Clean up any stale drawer scrim when the window crosses the narrow↔wide
+// breakpoint.
 function bindResponsiveScrim() {
   const mq = window.matchMedia(WIDE_QUERY);
   const onChange = () => {
     if (mq.matches) {
-      // Wide: remove any leftover scrim and revert to saved collapsed state.
+      // Wide: drop any scrim and revert to saved collapsed state.
       document.getElementById('sidebar-scrim')?.remove();
       if (els.shell.dataset.sidebar === 'closed') {
-        // On first resize to wide without stored preference, default to open.
+        // First resize to wide without saved pref → default to open.
         els.shell.dataset.sidebar = 'open';
       }
       els.btnToggle?.setAttribute('aria-pressed', String(els.shell.dataset.sidebar !== 'collapsed'));
@@ -306,14 +305,14 @@ function bindResponsiveScrim() {
       }
     }
   };
-  // addEventListener is preferred; addListener is a legacy Safari fallback.
+  // Prefer addEventListener; addListener is a legacy Safari fallback.
   if (mq.addEventListener) mq.addEventListener('change', onChange);
   else if (mq.addListener) mq.addListener(onChange);
 }
 
 function bindControls() {
   els.btnNewFile?.addEventListener('click', async () => {
-    const active = Store.activeProject() || Store.projectList()[0];
+    const active = Store.focusedProject();
     if (!active) {
       const p = await createProject({ name: 'My documents' });
       await createAndOpenFile(p.id);
@@ -324,7 +323,7 @@ function bindControls() {
 
   els.btnNewProj?.addEventListener('click', async () => {
     const p = await createProject({ name: `Project ${Store.projects.size + 1}` });
-    // Auto-enter rename mode for the new project.
+    // Immediately enter rename mode on the new project.
     requestAnimationFrame(() => startRenameProject(p.id));
   });
 
@@ -353,7 +352,7 @@ export function toggleSidebar(force) {
   const cur = els.shell.dataset.sidebar;
   let next;
   if (typeof force === 'boolean') {
-    // force=true always opens; force=false collapses on wide / closes on narrow.
+    // force=true always opens; force=false collapses on wide, closes on narrow.
     next = force ? 'open' : (wide ? 'collapsed' : 'closed');
   } else {
     if (wide) next = cur === 'collapsed' ? 'open' : 'collapsed';
@@ -379,17 +378,17 @@ function ensureScrim() {
     scrim.id = 'sidebar-scrim';
     scrim.className = 'sidebar-scrim';
     scrim.addEventListener('click', () => toggleSidebar(false));
-    // Prevent iOS from scrolling the body underneath the drawer.
+    // Stop iOS from scrolling the body underneath the drawer.
     scrim.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
     els.shell.appendChild(scrim);
   }
-  // Body-scroll lock pairs with the `body.is-drawer-open` rule in CSS.
+  // Pairs with `body.is-drawer-open` in CSS (body-scroll lock).
   document.body.classList.toggle('is-drawer-open', drawerOpen);
 }
 
 // Left-swipe on the drawer to close it. Claims the gesture only when
-// horizontal motion dominates vertical, so the file list can still scroll
-// normally. Closes on distance (≥35% of drawer width) or flick velocity.
+// horizontal motion dominates vertical so the file list can still scroll.
+// Closes on distance (≥35% of drawer width) or flick velocity.
 function bindDrawerSwipe() {
   const INTENT_THRESHOLD = 10;
   const CLOSE_DISTANCE_RATIO = 0.35;
@@ -419,7 +418,7 @@ function bindDrawerSwipe() {
 
   els.sidebar.addEventListener('touchstart', (e) => {
     if (!isDrawerOpen()) return;
-    // Skip text-entry controls so caret/selection gestures work normally.
+    // Skip text inputs so caret/selection gestures work normally.
     if (e.target?.closest('input, textarea, [contenteditable="true"]')) return;
     const t = e.touches[0];
     startX = t.clientX;
@@ -449,8 +448,8 @@ function bindDrawerSwipe() {
     els.sidebar.style.transform = `translateX(${offset}px)`;
     const s = scrimEl();
     if (s) s.style.opacity = String(1 + offset / width);
-    // preventDefault can fail with cancelable=false once the browser commits
-    // to native scrolling; guard to avoid console intervention warnings.
+    // preventDefault fails with cancelable=false once the browser commits
+    // to native scrolling — guard to avoid console intervention warnings.
     if (e.cancelable) e.preventDefault();
   }, { passive: false });
 
@@ -470,14 +469,14 @@ function bindDrawerSwipe() {
     setDragging(false);
     state = 'idle';
 
-    // Animate the final segment via inline transform (CSS transition is back
-    // on now that .is-swiping is gone), then commit state & clear inline.
+    // Animate the final segment via inline transform (CSS transition is
+    // back on now that .is-swiping is gone), then commit state + clear.
     if (shouldClose) {
       els.sidebar.style.transform = `translateX(${-width}px)`;
       const s = scrimEl();
       if (s) s.style.opacity = '0';
       // Flip data-sidebar BEFORE clearing inline, so the CSS closed-state
-      // transform matches what's on screen (no one-frame snap to 0).
+      // transform matches what's on screen (no one-frame snap).
       setTimeout(() => {
         toggleSidebar(false);
         clearInlineStyles();
@@ -496,9 +495,8 @@ function bindDrawerSwipe() {
 
 function bindResize() {
   let dragging = false, startX = 0, startWidth = 0;
-  // Invoked from every drop path — including mouseleave / blur — so the
-  // global cursor + userSelect never stick when the mouse is released
-  // outside the browser viewport.
+  // Called from every drop path (mouseleave / blur / up) so global cursor
+  // + userSelect never stick when the mouse is released outside the window.
   const stopDrag = () => {
     if (!dragging) return;
     dragging = false;
@@ -535,13 +533,13 @@ function bindResize() {
 }
 
 function bindDragReset() {
-  // Clear drag-over visual state if a drag is cancelled anywhere.
+  // Clear drag-over visuals if a drag is cancelled anywhere.
   document.addEventListener('dragend', () => {
     els.tree?.querySelectorAll('.is-drag-over').forEach(el => el.classList.remove('is-drag-over'));
   });
 }
 
-// ---- Rendering ----------------------------------------------------------
+// ── Rendering ────────────────────────────────────────────────────────
 
 function render() {
   if (!els.tree) return;
@@ -573,6 +571,7 @@ function renderProject(project) {
   const node = document.createElement('div');
   node.className = 'project';
   if (project.collapsed) node.classList.add('is-collapsed');
+  if (Store.lastActiveProjectId === project.id) node.classList.add('is-focused');
   node.dataset.projectId = project.id;
   node.style.setProperty('--project-color', projectColor(project.color));
   node.setAttribute('role', 'treeitem');
@@ -601,12 +600,14 @@ function renderProject(project) {
   `;
   header.addEventListener('click', (e) => {
     if (e.target.closest('[data-project-act]')) return;
+    Store.setFocusedProject(project.id);
     toggleProject(project.id);
   });
   header.addEventListener('dblclick', () => startRenameProject(project.id));
 
   header.querySelector('[data-project-act="new-file"]')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    Store.setFocusedProject(project.id);
     createAndOpenFile(project.id);
   });
   header.querySelector('[data-project-act="rename"]')?.addEventListener('click', (e) => {
@@ -676,7 +677,19 @@ function renderProject(project) {
   if (files.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'file file--empty';
-    empty.textContent = 'No files — click + to add';
+    empty.setAttribute('role', 'note');
+    empty.innerHTML = `
+      <span class="file--empty__text">
+        Click <kbd class="file--empty__kbd">+</kbd> to add or
+        <button type="button" class="file--empty__link"
+                aria-label="Upload files into ${escapeHtml(project.name)}">upload</button>
+      </span>
+    `;
+    empty.querySelector('.file--empty__link').addEventListener('click', (e) => {
+      e.stopPropagation();
+      Store.setFocusedProject(project.id);
+      hooks.onUploadToProject?.(project.id);
+    });
     fileList.appendChild(empty);
   }
 
@@ -835,7 +848,7 @@ function snippetFor(content, q) {
 
 function highlightMatch(text, q) {
   if (!q) return escapeHtml(text);
-  // Fuzzy-style: mark every character of q that appears in sequence.
+  // Fuzzy highlight: mark each char of q that appears in sequence.
   const lower = text.toLowerCase();
   const needle = q.toLowerCase();
   const marks = new Array(text.length).fill(false);
@@ -859,9 +872,18 @@ function renderActiveHighlight() {
   }
 }
 
+function renderFocusedProject() {
+  if (!els.tree) return;
+  els.tree.querySelectorAll('.project.is-focused').forEach(el => el.classList.remove('is-focused'));
+  if (Store.lastActiveProjectId) {
+    const node = els.tree.querySelector(`.project[data-project-id="${cssEscape(Store.lastActiveProjectId)}"]`);
+    node?.classList.add('is-focused');
+  }
+}
+
 function renderDirtyMarkers() {
   if (!els.tree) return;
-  // Just re-render the affected rows to add/remove the dirty dot.
+  // Re-render just the affected rows to add/remove the dirty dot.
   els.tree.querySelectorAll('.file[data-file-id]').forEach(row => {
     const id = row.dataset.fileId;
     const has = !!row.querySelector('.file__dirty');
@@ -878,7 +900,7 @@ function renderDirtyMarkers() {
   });
 }
 
-// ---- Actions -----------------------------------------------------------
+// ── Actions ──────────────────────────────────────────────────────────
 
 async function toggleProject(id) {
   const p = Store.projects.get(id);
@@ -913,9 +935,8 @@ function startRenameFile(id) {
   input.value = file.name;
   nameEl.replaceWith(input);
   input.focus();
-  // Preselect just the stem so renames don't require the user to retype
-  // the extension. Handles .md / .markdown / .txt consistently with
-  // `ensureMdExt` in projects.js.
+  // Preselect the stem so renames don't require retyping the extension.
+  // Matches `ensureMdExt` in projects.js (.md / .markdown / .txt).
   const stemEnd = file.name.replace(/\.(md|markdown|txt)$/i, '').length;
   try { input.setSelectionRange(0, stemEnd); } catch {}
 

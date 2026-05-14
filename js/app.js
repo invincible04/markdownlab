@@ -1,12 +1,19 @@
-/* MarkdownLab — render pipeline:
-   editor → extractMath → marked → reinjectMath → DOMPurify → Mermaid → postProcess
+/**
+ * MarkdownLab — render pipeline:
+ *   editor → extractMath → marked → reinjectMath → DOMPurify → Mermaid → postProcess
+ *
+ * State model: projects → files → tabs. All persistence lives in
+ * IndexedDB (via ./db.js); the render / scroll / TOC / Mermaid / KaTeX
+ * pipeline below reads `editor.value` and paints into `preview`,
+ * independent of which file is active.
+ */
 
-   State model: projects → files → tabs. All persistence lives in IndexedDB
-   (via ./db.js); the rendering/scroll/TOC/Mermaid/KaTeX pipeline below is
-   identical to the single-doc version — it simply reads `editor.value` and
-   paints into `preview`, independent of which file is active. */
-
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs';
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+// Mermaid v11 built-in diagrams used by the app (architecture-beta, packet-beta,
+// block, sankey, xychart, kanban, radar, treemap, mindmap, gantt, gitGraph,
+// etc.) self-register on import. No external diagram plugins are loaded:
+// zenuml was removed because its foreignObject output (Vue + runtime Tailwind
+// JIT) cannot be serialized into offline HTML exports reliably.
 import { EXAMPLES } from './examples.js';
 import {
   Store, loadAll,
@@ -19,8 +26,15 @@ import { initSidebar, toggleSidebar } from './sidebar.js';
 import { initTabs, cycleTab } from './tabs.js';
 import { initPalette, openPalette, closePalette } from './palette.js';
 import { escapeHtml, cssEscape } from './utils.js';
+import { extractFrontmatter } from './frontmatter.js';
+import { extractMath, reinjectMath } from './math.js';
+import {
+  installFocusTrap, releaseFocusTrap,
+  showShortcuts, hideShortcuts, toggleShortcuts,
+  showAbout, hideAbout, toggleAbout,
+} from './overlays.js';
 
-// ---------- DOM refs ----------
+// ── DOM refs ─────────────────────────────────────────────────────────
 const editor         = document.getElementById('editor');
 if (editor) editor.setAttribute('autocorrect', 'off');
 const editorMirror   = document.getElementById('editor-mirror');
@@ -35,10 +49,12 @@ if (folderInput) {
   folderInput.setAttribute('webkitdirectory', '');
   folderInput.setAttribute('directory', '');
 }
+// Per-upload target project. Set by the sidebar's per-project upload
+// button; consumed (and cleared) on the next loadFile() call.
+let _pendingUploadProjectId = null;
 const btnUpload      = document.getElementById('btn-upload');
 const btnTheme       = document.getElementById('btn-theme');
 const btnFocus       = document.getElementById('btn-focus');
-// Focus-mode dock — replaces the single "exit" pill with a mini toolbar.
 const focusDock      = document.getElementById('focus-dock');
 const dockTheme      = document.getElementById('dock-theme');
 const dockReading    = document.getElementById('dock-reading');
@@ -73,7 +89,7 @@ const katex          = window.katex;
 
 const THEME_KEY      = 'mdlab.theme.v1';
 const VIEW_KEY       = 'mdlab.view.v1';
-// v2: discards any v1 split saved before the outline-offset fix.
+// v2 discards any v1 split saved before the outline-offset fix.
 const SPLIT_KEY      = 'mdlab.split.v2';
 const PROSE_KEY      = 'mdlab.prose.v1';
 const SYNC_KEY       = 'mdlab.sync.v1';
@@ -84,6 +100,33 @@ let mermaidCounter = 0;
 let _anchorRebuildTimer;
 let _lastPreviewHtml = null;
 let _renderGen = 0;
+// `_lastSrcLen = -1` forces the first render. Hash gate skips re-renders
+// when the source is unchanged.
+let _lastSrcHash = 0;
+let _lastSrcLen = -1;
+
+// Cached math ranges (full-source coords). Find treats text inside
+// $…$ / $$…$$ as hidden; `_lastMathSrc` guards against stale reads
+// mid-keystroke (find bar reads these while render() is debouncing).
+let _lastMathRanges = [];
+let _lastMathSrc = null;
+
+// FNV-1a 32-bit. Shared by hljs / sanitize / mermaid cache keys and
+// render()'s input-hash gate.
+function fnv1a32(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// Reset after programmatic editor.value assignment so the next render runs.
+function invalidateRenderCache() {
+  _lastSrcLen = -1;
+  _lastSrcHash = 0;
+}
 
 function debounce(fn, ms) {
   let t = 0;
@@ -96,8 +139,8 @@ function debounce(fn, ms) {
   return wrapped;
 }
 
-// Microtask defer lets all module-level bindings initialize before any code
-// path (init → render → persist) touches them — avoids TDZ errors.
+// Microtask defer — all module-level bindings init before any code path
+// (init → render → persist) touches them, avoiding TDZ errors.
 Promise.resolve().then(() => init()).catch(err => {
   console.error('Init failed:', err);
   setStatus('error', 'Failed to initialize');
@@ -111,8 +154,8 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
       .then((reg) => {
-        // Poll on visibility/focus instead of setInterval so idle tabs
-        // don't hammer the network; throttled to once per 24h.
+        // Poll on visibility/focus (not setInterval) so idle tabs don't
+        // hammer the network. Throttle to once per 24h.
         const UPDATE_COOLDOWN = 24 * 60 * 60 * 1000;
         let lastUpdateCheck = 0;
         const maybeUpdate = () => {
@@ -156,7 +199,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
       })
       .catch(err => console.warn('Service worker registration failed:', err));
 
-    // Reload once the new SW takes control. Skip on first install.
+    // Reload when the new SW takes control. Skipped on first install.
     if (navigator.serviceWorker.controller) {
       let refreshing = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -192,6 +235,10 @@ async function init() {
     onFileDeleted: () => {},
     onUndoableDelete: (info) => showUndoableDeleteToast(info),
     onDbBlocked: (err) => showToast(err?.message || 'Storage blocked by another tab', 'error'),
+    onUploadToProject: (projectId) => {
+      _pendingUploadProjectId = projectId;
+      fileInput.click();
+    },
   });
 
   initTabs({
@@ -201,6 +248,7 @@ async function init() {
       if (Store.activeId && Store.activeId !== _loadedFileId) switchToFile(Store.activeId);
       else if (!Store.activeId) {
         editor.value = '';
+        invalidateRenderCache();
         updateFileIndicator();
         safeUpdateGutter();
         scheduleRender();
@@ -237,10 +285,10 @@ async function init() {
 
   await render();
 
-  // If a library became usable on a later tick and our first render produced
-  // nothing, render once more.
+  // First render may have short-circuited the retry via hash cache.
   if (editor.value.trim().length > 0 && preview.innerText.trim().length < 10) {
     console.warn('Preview empty after init — forcing re-render');
+    invalidateRenderCache();
     await render();
   }
 
@@ -317,13 +365,19 @@ function setupMarked() {
 const HLJS_CACHE_MAX = 256;
 const _hljsCache = new Map();
 
+// Post-sanitize HTML cache — fast path for file-switch round-trips and
+// edit/undo/retype.
+const SANITIZE_CACHE_MAX = 24;
+const _sanitizeCache = new Map();
+
+const DOMPURIFY_CONFIG = Object.freeze({
+  ADD_TAGS: ['foreignObject', 'annotation-xml', 'semantics', 'annotation', 'math', 'mi', 'mo', 'mn', 'mrow', 'msup', 'msub', 'msubsup', 'mfrac', 'mspace', 'mtext', 'menclose', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
+  ADD_ATTR: ['target', 'mathvariant', 'displaystyle', 'mathcolor'],
+  ALLOW_UNKNOWN_PROTOCOLS: false,
+});
+
 function hljsKey(code, lang) {
-  let h = 2166136261;
-  for (let i = 0; i < code.length; i++) {
-    h ^= code.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `${lang || ''}\0${code.length}\0${h >>> 0}`;
+  return `${lang || ''}\0${code.length}\0${fnv1a32(code)}`;
 }
 
 function highlightCached(code, lang) {
@@ -352,6 +406,64 @@ function highlightCached(code, lang) {
     _hljsCache.delete(firstKey);
   }
   return result;
+}
+
+// Mermaid SVG LRU cache. Keyed on (theme, length, hash). Diagrams using
+// `click` directives are skipped — bindFunctions can't be reconstructed.
+const MERMAID_CACHE_MAX = 64;
+const _mermaidCache = new Map();
+
+function mermaidKey(code, theme) {
+  return `${theme}\0${code.length}\0${fnv1a32(code)}`;
+}
+
+function mermaidCodeIsCacheable(code) {
+  return !/^\s*click\s+/m.test(code);
+}
+
+function mermaidCacheGet(key) {
+  const hit = _mermaidCache.get(key);
+  if (hit === undefined) return undefined;
+  _mermaidCache.delete(key);
+  _mermaidCache.set(key, hit);
+  return hit;
+}
+
+function mermaidCacheSet(key, svg) {
+  _mermaidCache.set(key, svg);
+  if (_mermaidCache.size > MERMAID_CACHE_MAX) {
+    _mermaidCache.delete(_mermaidCache.keys().next().value);
+  }
+}
+
+// Uniquify ids + internal refs so a cached SVG can paint multiple times
+// without duplicate-id collisions. Also rewrites the embedded <style>
+// block's `#<svgId>` selectors — mermaid scopes every rule by the root
+// svg id, so leaving those stale strips fills, strokes, and markers.
+function uniquifyMermaidSvgIds(svg, seed) {
+  const suffix = `-c${seed}`;
+  const rootIdMatch = svg.match(/<svg[^>]*\bid="([^"]+)"/);
+  const rootId = rootIdMatch ? rootIdMatch[1] : null;
+
+  let out = svg
+    .replace(/\bid="([^"]+)"/g, (_, id) => `id="${id}${suffix}"`)
+    .replace(/\burl\(#([^)]+)\)/g, (_, id) => `url(#${id}${suffix})`)
+    // (xlink:)? avoids a negative lookbehind — iOS Safari <16.4 fails to parse.
+    .replace(/\b(xlink:)?href="#([^"]+)"/g,
+      (_, xlink, id) => `${xlink || ''}href="#${id}${suffix}"`)
+    .replace(/\baria-(labelledby|describedby)="([^"]+)"/g,
+      (_, attr, idList) => {
+        const rewritten = idList.split(/\s+/).filter(Boolean).map(id => id + suffix).join(' ');
+        return `aria-${attr}="${rewritten}"`;
+      });
+
+  if (rootId) {
+    const escaped = rootId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorRe = new RegExp(`#${escaped}(?![\\w-])`, 'g');
+    out = out.replace(/<style>([\s\S]*?)<\/style>/g,
+      (_, css) => `<style>${css.replace(selectorRe, `#${rootId}${suffix}`)}</style>`);
+  }
+  return out;
 }
 
 const ALERT_ICONS = {
@@ -617,321 +729,97 @@ function mermaidThemeVars(theme) {
   };
 }
 
-// Render YAML frontmatter as a GitHub-style two-column table. Without this
-// step, marked treats the leading `---…---` block as a setext H2 per
-// CommonMark, producing a giant bold heading. We parse a safe subset of
-// YAML and emit a table; on any parse failure we strip the block silently.
 
-const FRONTMATTER_KEY_RE = /^([A-Za-z_][\w.-]*)\s*:\s*(.*)$/;
 
-function extractFrontmatter(src) {
-  if (!src.startsWith('---')) return { frontmatterHtml: '', body: src };
-  const firstNl = src.indexOf('\n');
-  if (firstNl === -1) return { frontmatterHtml: '', body: src };
-  if (src.slice(0, firstNl).trim() !== '---') return { frontmatterHtml: '', body: src };
+// Block-level diff: replace only the changed middle of the preview tree.
+// Mermaid matches on data-mermaid-src so rendered SVGs survive re-renders.
+const _previewParser = new DOMParser();
 
-  const rest = src.slice(firstNl + 1);
-  const closeMatch = rest.match(/^(?:---|\.\.\.)\s*$/m);
-  if (!closeMatch) return { frontmatterHtml: '', body: src };
-  const yamlText = rest.slice(0, closeMatch.index).replace(/\s+$/, '');
-  let bodyStart = closeMatch.index + closeMatch[0].length;
-  if (rest[bodyStart] === '\n') bodyStart++;
-  const body = rest.slice(bodyStart);
-
-  let data;
-  try {
-    data = parseSimpleYaml(yamlText);
-  } catch {
-    return { frontmatterHtml: '', body };
+function blockSig(el) {
+  if (el.classList?.contains('mermaid')) {
+    return `mermaid\0${fnv1a32(el.getAttribute('data-mermaid-src') || '')}`;
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) {
-    return { frontmatterHtml: '', body };
+  // postProcess wraps <table> in .table-wrap; normalise to match bare <table>.
+  if (el.classList?.contains('table-wrap')) {
+    const inner = el.firstElementChild;
+    if (inner && inner.tagName === 'TABLE') return `table\0${fnv1a32(inner.outerHTML)}`;
   }
-  return { frontmatterHtml: renderFrontmatterTable(data), body };
+  if (el.tagName === 'TABLE') return `table\0${fnv1a32(el.outerHTML)}`;
+  // postProcess decorates <pre> (copy button, lang badge) — hash inner <code>.
+  if (el.tagName === 'PRE') {
+    const code = el.querySelector('code');
+    if (code) return `pre\0${fnv1a32(code.outerHTML)}`;
+  }
+  // postProcess mutates task-list checkbox attributes — hash text + state.
+  if ((el.tagName === 'UL' || el.tagName === 'OL') &&
+      el.querySelector(':scope > li.task-list-item')) {
+    const parts = [];
+    for (const li of el.children) {
+      const cb = li.querySelector(':scope > input[type="checkbox"]');
+      parts.push((cb?.checked ? '1' : '0') + '\0' + (li.textContent || ''));
+    }
+    return `tasklist\0${fnv1a32(parts.join('\n'))}`;
+  }
+  return fnv1a32(el.outerHTML);
 }
 
-// Minimal YAML subset: flat scalars, quoted strings, block sequences,
-// flow sequences/maps, and one level of nested block mappings. Throws on
-// anything unsupported so the caller can fall back.
-function parseSimpleYaml(text) {
-  const lines = text.split('\n');
-  const root = {};
-  const indentOf = (line) => line.match(/^ */)[0].length;
+function applyPreviewHtml(html) {
+  const old = preview;
+  const oldCount = old.children.length;
+  if (oldCount < 3) { old.innerHTML = html; return; }
 
-  const scalar = (raw) => {
-    const s = raw.trim();
-    if (s === '' || s === '~' || s.toLowerCase() === 'null') return null;
-    if (/^(true|yes|on)$/i.test(s)) return true;
-    if (/^(false|no|off)$/i.test(s)) return false;
-    if (/^-?\d+$/.test(s)) return Number(s);
-    if (/^-?\d+\.\d+$/.test(s)) return Number(s);
-    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-      return s.slice(1, -1);
-    }
-    if (s.startsWith('[') && s.endsWith(']')) {
-      const inner = s.slice(1, -1).trim();
-      return inner ? inner.split(',').map(scalar) : [];
-    }
-    if (s.startsWith('{') && s.endsWith('}')) {
-      const inner = s.slice(1, -1).trim();
-      const obj = {};
-      if (!inner) return obj;
-      for (const pair of inner.split(',')) {
-        const idx = pair.indexOf(':');
-        if (idx === -1) continue;
-        obj[pair.slice(0, idx).trim()] = scalar(pair.slice(idx + 1));
-      }
-      return obj;
-    }
-    return s;
-  };
+  const doc = _previewParser.parseFromString(
+    `<!doctype html><body>${html}</body>`, 'text/html'
+  );
+  const incoming = doc.body;
+  const newCount = incoming.children.length;
+  if (newCount < 3) { old.innerHTML = html; return; }
 
-  // YAML requires whitespace before `#` for an inline comment.
-  const stripComment = (line) => {
-    let inSingle = false, inDouble = false;
-    for (let k = 0; k < line.length; k++) {
-      const ch = line[k];
-      if (ch === "'" && !inDouble) inSingle = !inSingle;
-      else if (ch === '"' && !inSingle) inDouble = !inDouble;
-      else if (ch === '#' && !inSingle && !inDouble && (k === 0 || /\s/.test(line[k - 1]))) {
-        return line.slice(0, k);
-      }
-    }
-    return line;
-  };
+  const oldSigs = new Array(oldCount);
+  const newSigs = new Array(newCount);
+  for (let i = 0; i < oldCount; i++) oldSigs[i] = blockSig(old.children[i]);
+  for (let i = 0; i < newCount; i++) newSigs[i] = blockSig(incoming.children[i]);
 
-  const isBlank = (l) => !l.trim() || /^\s*#/.test(l);
+  let p = 0;
+  const minCount = Math.min(oldCount, newCount);
+  while (p < minCount && oldSigs[p] === newSigs[p]) p++;
 
-  let i = 0;
-  while (i < lines.length) {
-    let line = lines[i];
-    if (isBlank(line)) { i++; continue; }
-    line = stripComment(line);
-    if (!line.trim()) { i++; continue; }
+  let sOld = oldCount - 1, sNew = newCount - 1;
+  while (sOld >= p && sNew >= p && oldSigs[sOld] === newSigs[sNew]) { sOld--; sNew--; }
 
-    if (indentOf(line) !== 0) throw new Error('Unexpected indentation at top level');
-    const m = line.match(FRONTMATTER_KEY_RE);
-    if (!m) throw new Error(`Unparseable line: ${line}`);
-    const key = m[1];
-    const inline = m[2];
+  const oldReplace = sOld - p + 1;
+  const newInsert  = sNew - p + 1;
 
-    if (inline !== '') {
-      root[key] = scalar(inline);
-      i++;
-      continue;
-    }
-
-    let j = i + 1;
-    while (j < lines.length && isBlank(lines[j])) j++;
-    if (j >= lines.length || indentOf(lines[j]) === 0) {
-      root[key] = null;
-      i = j;
-      continue;
-    }
-
-    const childIndent = indentOf(lines[j]);
-    if (/^\s+-(\s|$)/.test(lines[j])) {
-      const items = [];
-      while (j < lines.length) {
-        const l = lines[j];
-        if (isBlank(l)) { j++; continue; }
-        if (indentOf(l) < childIndent) break;
-        const sm = l.match(/^\s+-\s*(.*)$/);
-        if (!sm) break;
-        items.push(scalar(sm[1]));
-        j++;
-      }
-      root[key] = items;
-    } else {
-      const sub = {};
-      while (j < lines.length) {
-        const l = lines[j];
-        if (isBlank(l)) { j++; continue; }
-        if (indentOf(l) < childIndent) break;
-        const sm = stripComment(l).match(/^\s+([A-Za-z_][\w.-]*)\s*:\s*(.*)$/);
-        if (!sm) throw new Error(`Unparseable nested line: ${l}`);
-        sub[sm[1]] = scalar(sm[2]);
-        j++;
-      }
-      root[key] = sub;
-    }
-    i = j;
+  // >40% changed — full replace is simpler than splice.
+  if (Math.max(oldReplace, newInsert) > Math.max(oldCount, newCount) * 0.4) {
+    old.innerHTML = html;
+    return;
   }
 
-  return root;
-}
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < newInsert; i++) frag.appendChild(incoming.children[p]);
+  for (let k = 0; k < oldReplace; k++) old.children[p].remove();
 
-function renderFrontmatterTable(data) {
-  const rows = Object.entries(data).map(([k, v]) =>
-    `<tr><th scope="row">${softBreakKey(k)}</th><td>${renderFrontmatterValue(v)}</td></tr>`
-  ).join('');
-  return `<table class="markdown-frontmatter"><tbody>${rows}</tbody></table>`;
-}
-
-function renderFrontmatterValue(value) {
-  if (value === null || value === undefined) return '';
-  if (Array.isArray(value)) {
-    if (!value.length) return '';
-    return `<span class="frontmatter-chips">${
-      value.map((v) => `<span class="frontmatter-chip">${escapeHtml(formatFrontmatterScalar(v))}</span>`).join('')
-    }</span>`;
-  }
-  if (typeof value === 'object') {
-    const rows = Object.entries(value).map(([k, v]) =>
-      `<tr><th scope="row">${softBreakKey(k)}</th><td>${renderFrontmatterValue(v)}</td></tr>`
-    ).join('');
-    return `<table class="markdown-frontmatter markdown-frontmatter--nested"><tbody>${rows}</tbody></table>`;
-  }
-  return escapeHtml(formatFrontmatterScalar(value));
-}
-
-// Insert U+200B (zero-width space) after _ and - so long identifier keys like
-// `estimated_reading_time` wrap at natural boundaries instead of mid-word.
-function softBreakKey(key) {
-  return escapeHtml(String(key)).replace(/([_-])/g, '$1\u200B');
-}
-
-function formatFrontmatterScalar(v) {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'boolean') return v ? 'true' : 'false';
-  return String(v);
-}
-
-// Extract $…$ and $$…$$ math (outside fenced/inline code), render with KaTeX,
-// leave placeholders that are re-injected after marked runs.
-const MATH_PLACEHOLDER = (i) => `@@MATH_PLACEHOLDER_${i}@@`;
-
-// Cached math ranges from the last render(), in full-source coordinates.
-// Read by computePreviewHiddenRanges() so find can treat matches inside
-// $…$ / $$…$$ as hidden (the KaTeX walker rejects them). `_lastMathSrc`
-// sentinel prevents reading stale ranges when the editor is mid-keystroke.
-let _lastMathRanges = [];
-let _lastMathSrc = null;
-
-function extractMath(src) {
-  const renders = [];
-  const ranges = [];   // {start, end, display} in body-local offsets
-  const out = [];
-  let i = 0;
-
-  while (i < src.length) {
-    // Skip over fenced code blocks so $…$ inside stays literal.
-    // CommonMark allows up to 3 spaces of indent before the fence marker.
-    const fenceMatch = src.slice(i).match(/^( {0,3})([`~]{3,})([^\n]*)\n/);
-    if (fenceMatch && (i === 0 || src[i-1] === '\n')) {
-      const fence = fenceMatch[2];
-      const close = src.indexOf('\n' + fence, i + fenceMatch[0].length);
-      let end;
-      if (close === -1) {
-        end = src.length;
-      } else {
-        const afterFence = src.indexOf('\n', close + 1);
-        end = afterFence === -1 ? src.length : afterFence + 1;
-      }
-      out.push(src.slice(i, end));
-      i = end;
-      continue;
-    }
-
-    // Skip over inline code spans
-    if (src[i] === '`') {
-      let ticks = 0;
-      while (src[i + ticks] === '`') ticks++;
-      const opener = '`'.repeat(ticks);
-      const closeIdx = src.indexOf(opener, i + ticks);
-      if (closeIdx !== -1) {
-        const end = closeIdx + ticks;
-        out.push(src.slice(i, end));
-        i = end;
-        continue;
-      }
-    }
-
-    // Block math $$…$$
-    if (src[i] === '$' && src[i + 1] === '$') {
-      let j = i + 2;
-      let close = -1;
-      let aborted = false;
-      while (j < src.length - 1) {
-        if (src[j] === '`') { aborted = true; break; }
-        if (src[j] === '$' && src[j + 1] === '$') { close = j; break; }
-        j++;
-      }
-      if (!aborted && close !== -1) {
-        const tex = src.slice(i + 2, close);
-        const idx = renders.length;
-        renders.push(renderKatex(tex, true));
-        out.push(`\n\n${MATH_PLACEHOLDER(idx)}\n\n`);
-        ranges.push({ start: i, end: close + 2, display: true });
-        i = close + 2;
-        continue;
-      }
-    }
-
-    if (src[i] === '$') {
-      const prev = src[i - 1];
-      const next = src[i + 1];
-      const openingOk =
-        next && next !== ' ' && next !== '\t' && next !== '\n' && next !== '$' && !/\d/.test(next) &&
-        !(prev && /\w/.test(prev));
-      if (openingOk) {
-        let j = i + 1;
-        let found = -1;
-        while (j < src.length) {
-          const ch = src[j];
-          if (ch === '\n' && src[j + 1] === '\n') break;
-          if (ch === '`') break;
-          if (ch === '$' && src[j - 1] !== '\\' && src[j - 1] !== ' ' && src[j - 1] !== '\t' && src[j + 1] !== '$') {
-            const after = src[j + 1];
-            if (!after || !/\d/.test(after)) { found = j; break; }
-          }
-          j++;
-        }
-        if (found !== -1) {
-          const tex = src.slice(i + 1, found);
-          if (tex.trim().length > 0) {
-            const idx = renders.length;
-            renders.push(renderKatex(tex, false));
-            out.push(MATH_PLACEHOLDER(idx));
-            ranges.push({ start: i, end: found + 1, display: false });
-            i = found + 1;
-            continue;
-          }
-        }
-      }
-    }
-
-    out.push(src[i]);
-    i++;
-  }
-
-  return { processed: out.join(''), renders, mathRanges: ranges };
-}
-
-function renderKatex(tex, displayMode) {
-  try {
-    return katex.renderToString(tex, {
-      displayMode,
-      throwOnError: false,
-      output: 'htmlAndMathml',
-      strict: 'ignore',
-      trust: false,
-    });
-  } catch (err) {
-    const msg = escapeHtml(String(err?.message || err));
-    return `<span class="katex-error" title="${msg}">${escapeHtml(tex)}</span>`;
-  }
-}
-
-function reinjectMath(html, renders) {
-  return html.replace(/@@MATH_PLACEHOLDER_(\d+)@@/g, (_, idx) => renders[Number(idx)] ?? '');
+  const anchor = old.children[p] || null;
+  if (anchor) old.insertBefore(frag, anchor);
+  else old.appendChild(frag);
 }
 
 async function render() {
   const src = editor.value;
-  const gen = ++_renderGen;
+
+  // Stats + persist run before the hash gate so out-of-band f.content
+  // mutations still surface in the footer and IndexedDB.
   updateStats(src);
   persist();
+
+  // Byte-identical input: skip the entire pipeline.
+  const srcLen = src.length;
+  const srcHash = fnv1a32(src);
+  if (srcLen === _lastSrcLen && srcHash === _lastSrcHash) return;
+  _lastSrcLen = srcLen;
+  _lastSrcHash = srcHash;
+  const gen = ++_renderGen;
   const nextBlockLines = computeSourceBlockLines(src);
   const blockLinesChanged =
     nextBlockLines.length !== sourceBlockLines.length ||
@@ -950,8 +838,7 @@ async function render() {
       btn.disabled = true;
       try {
         const project =
-          Store.activeProject() ||
-          Store.projectList()[0] ||
+          Store.focusedProject() ||
           (await createProject({ name: 'My documents' }));
         const name = uniqueFileName(project.id, 'welcome.md');
         const f = await createFile({ projectId: project.id, name, content: EXAMPLES.welcome.content });
@@ -971,8 +858,8 @@ async function render() {
     const { frontmatterHtml, body } = extractFrontmatter(src);
     const { processed, renders, mathRanges } = extractMath(body);
 
-    // Shift math ranges into full-source coords once here so the find
-    // system doesn't have to re-apply the frontmatter offset on every read.
+    // Shift math ranges into full-source coords once so find doesn't have
+    // to re-apply the frontmatter offset on every read.
     const bodyOffset = src.length - body.length;
     _lastMathRanges = mathRanges.map(r => ({
       start: r.start + bodyOffset,
@@ -981,30 +868,43 @@ async function render() {
     }));
     _lastMathSrc = src;
 
-    // Normalize tabs inside GFM table separator rows — pasted tables often
-    // carry trailing tabs that would otherwise fail the marked tokenizer.
+    // Pasted tables often carry trailing tabs in separator rows, which
+    // break the marked tokenizer. Normalize them to spaces.
     const tableNormalized = processed.replace(
       /^(\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*)$/gm,
       (line) => line.replace(/\t/g, ' ')
     );
 
-    let html = marked.parse(tableNormalized);
-    html = reinjectMath(html, renders);
-    if (frontmatterHtml) html = frontmatterHtml + html;
+    // Math placeholders are index-only, so TeX source must be hashed
+    // into the cache key or distinct formulas at the same index collide.
+    const mathKey = renders.length ? fnv1a32(renders.join('\0')) : 0;
+    const parseKey =
+      `${tableNormalized.length}\0${fnv1a32(tableNormalized)}\0` +
+      `${frontmatterHtml.length}\0${frontmatterHtml ? fnv1a32(frontmatterHtml) : 0}\0` +
+      `${renders.length}\0${mathKey}`;
+    let clean = _sanitizeCache.get(parseKey);
+    if (clean !== undefined) {
+      _sanitizeCache.delete(parseKey);
+      _sanitizeCache.set(parseKey, clean);
+    } else {
+      let html = marked.parse(tableNormalized);
+      html = reinjectMath(html, renders);
+      if (frontmatterHtml) html = frontmatterHtml + html;
+      clean = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+      _sanitizeCache.set(parseKey, clean);
+      if (_sanitizeCache.size > SANITIZE_CACHE_MAX) {
+        _sanitizeCache.delete(_sanitizeCache.keys().next().value);
+      }
+    }
 
-    const clean = DOMPurify.sanitize(html, {
-      ADD_TAGS: ['foreignObject', 'annotation-xml', 'semantics', 'annotation', 'math', 'mi', 'mo', 'mn', 'mrow', 'msup', 'msub', 'msubsup', 'mfrac', 'mspace', 'mtext', 'menclose', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
-      ADD_ATTR: ['target', 'mathvariant', 'displaystyle', 'mathcolor'],
-      ALLOW_UNKNOWN_PROTOCOLS: false,
-    });
-
-    // Skip DOM work when the sanitized output matches the last render — a
-    // keystroke that doesn't change the produced markup (trailing whitespace,
-    // typo-and-undo, etc.) would otherwise destroy and rebuild every Mermaid
-    // diagram and trigger a full reflow/repaint.
+    // Skip DOM work when the sanitized HTML is unchanged (trailing whitespace
+    // edits, typo-and-undo). Rebuilding would tear down every Mermaid SVG.
     const changed = clean !== _lastPreviewHtml;
     if (changed) {
-      preview.innerHTML = clean;
+      // Harvest before the swap so runMermaid Pass 1 can transplant live
+      // SVGs for diagrams whose source didn't change.
+      _mermaidHarvest = harvestRenderedMermaid();
+      applyPreviewHtml(clean);
       _lastPreviewHtml = clean;
       await runMermaid(gen);
       if (gen !== _renderGen) return;
@@ -1017,11 +917,11 @@ async function render() {
       }
     }
 
-    // On a no-op render (same sanitized HTML AND same source block structure),
-    // mirror + anchor maps are still valid — skip the O(N) rebuilds.
+    // No-op render with identical block structure: mirror + anchor maps
+    // are still valid, skip the O(N) rebuilds.
     if (changed || blockLinesChanged) {
-      // Rebuild now (best-effort) plus once more after Mermaid/KaTeX inflation
-      // settles. ResizeObserver catches any later changes.
+      // Rebuild now (best-effort) and again after Mermaid/KaTeX inflation
+      // settles; ResizeObserver catches anything that shifts afterwards.
       syncEditorMirror();
       rebuildAnchorMap();
       scheduleAnchorRebuild();
@@ -1051,12 +951,9 @@ function resetMermaidNodes(nodes) {
   });
 }
 
-// Offscreen sandbox for mermaid.render(). Rendering inside a display:none
-// pane returns 0×0 bounding rects and Dagre then emits NaN transforms;
-// an off-screen-but-laid-out container keeps measurements honest. The
-// `markdown-body` class makes htmlLabel text measure under the same
-// font-size / line-height the preview renders with, so foreignObject
-// dimensions baked into the SVG match the text at render time.
+// Offscreen sandbox for mermaid.render(). A display:none pane would return
+// 0×0 rects and Dagre emits NaN transforms; off-screen-but-laid-out works.
+// `markdown-body` keeps htmlLabel text measurements consistent with preview.
 let _mermaidSandbox = null;
 function ensureMermaidSandbox() {
   if (_mermaidSandbox && _mermaidSandbox.isConnected) return _mermaidSandbox;
@@ -1074,46 +971,207 @@ function ensureMermaidSandbox() {
 
 const isStaleRender = (gen) => gen !== undefined && gen !== _renderGen;
 
+// SVGs harvested from the outgoing preview, keyed by (theme, source-hash).
+// Populated before applyPreviewHtml; consumed by runMermaid's transplant pass.
+let _mermaidHarvest = null;
+
+function harvestRenderedMermaid() {
+  const map = new Map();
+  if (!preview) return map;
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const existing = preview.querySelectorAll('.mermaid[data-processed="true"]');
+  for (const el of existing) {
+    // Skip mismatched-theme SVGs — transplanting them would paint stale colors.
+    if (el.getAttribute('data-theme') !== theme) continue;
+    const raw = el.getAttribute('data-mermaid-src');
+    if (!raw) continue;
+    const svg = el.querySelector('svg');
+    if (!svg) continue;
+    let code;
+    try { code = decodeURIComponent(raw); } catch { continue; }
+    if (!mermaidCodeIsCacheable(code)) continue;
+    const key = mermaidKey(code, theme);
+    if (!map.has(key)) map.set(key, svg);
+  }
+  return map;
+}
+
+// Yield to the browser between work units. scheduler.yield where available
+// (Chrome 129+, Edge 129+, Firefox 142+), setTimeout(0) elsewhere.
+function yieldToMain() {
+  if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
+    return scheduler.yield();
+  }
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// Three passes: (1) keep diagrams already rendered under the current theme,
+// (2) transplant harvested SVGs for unchanged sources, (3) render remaining
+// diagrams — eager for those in or near the viewport, lazy for the rest.
 async function runMermaid(gen) {
   const nodes = Array.from(preview.querySelectorAll('.mermaid'));
-  if (!nodes.length) return;
+  if (!nodes.length) {
+    _mermaidHarvest = null;
+    return;
+  }
 
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const harvest = _mermaidHarvest;
+  _mermaidHarvest = null;
+
+  // Pass 1: strip nodes whose cached SVG was rendered under a different theme
+  // (block diff may preserve them across theme toggles); force a re-render.
   nodes.forEach((el) => {
+    const ready = el.getAttribute('data-processed') === 'true'
+      && el.getAttribute('data-theme') === theme
+      && el.querySelector('svg');
+    if (ready) {
+      if (!el.id) el.id = `mermaid-${++mermaidCounter}`;
+      return;
+    }
     el.removeAttribute('data-processed');
+    el.removeAttribute('data-theme');
     el.classList.remove('is-error');
     if (!el.id) el.id = `mermaid-${++mermaidCounter}`;
   });
 
-  const sandbox = ensureMermaidSandbox();
-
-  // Sequential: parallel mermaid.render() calls race on the sandbox container.
+  const deferred = [];
   for (const el of nodes) {
-    if (isStaleRender(gen)) return;
-
+    if (el.getAttribute('data-processed') === 'true') continue;
     const raw = el.getAttribute('data-mermaid-src');
-    const code = raw ? decodeURIComponent(raw) : el.textContent;
-    if (!code.trim()) continue;
-
-    const renderId = `mmd-${el.id}-${++mermaidCounter}`;
-    try {
-      const { svg, bindFunctions } = await mermaid.render(renderId, code, sandbox);
-      if (isStaleRender(gen)) return;
-      el.innerHTML = svg;
-      el.setAttribute('data-processed', 'true');
-      if (typeof bindFunctions === 'function') bindFunctions(el);
-    } catch (err) {
-      console.warn('Mermaid render error:', err);
-      renderMermaidError(el, err, code);
+    const code = raw ? safeDecode(raw) : el.textContent;
+    if (!code || !code.trim()) continue;
+    if (harvest && mermaidCodeIsCacheable(code)) {
+      const key = mermaidKey(code, theme);
+      const svg = harvest.get(key);
+      if (svg) {
+        el.replaceChildren(svg);
+        el.setAttribute('data-processed', 'true');
+        el.setAttribute('data-theme', theme);
+        harvest.delete(key);
+        attachDiagramControls(el);
+        continue;
+      }
     }
+    deferred.push({ el, code });
   }
 
+  if (!deferred.length) {
+    preview.querySelectorAll('.mermaid').forEach(attachDiagramControls);
+    return;
+  }
+
+  const viewportH = previewWrap.clientHeight || window.innerHeight;
+  const wrapRect = previewWrap.getBoundingClientRect();
+  const eagerMin = -viewportH;
+  const eagerMax = viewportH * 2;
+  const visible = [];
+  const offscreen = [];
+  for (const d of deferred) {
+    const top = d.el.getBoundingClientRect().top - wrapRect.top;
+    if (top >= eagerMin && top <= eagerMax) visible.push(d);
+    else offscreen.push(d);
+  }
+
+  const sandbox = ensureMermaidSandbox();
+  for (let i = 0; i < visible.length; i++) {
+    if (isStaleRender(gen)) return;
+    await renderOneMermaid(visible[i], theme, sandbox);
+    if (i < visible.length - 1) await yieldToMain();
+  }
   sandbox.innerHTML = '';
   if (isStaleRender(gen)) return;
 
-  const live = preview.querySelectorAll('.mermaid');
-  // Luminance-aware contrast pass — see applyMermaidContrast below.
-  live.forEach(applyMermaidContrast);
-  live.forEach(attachDiagramControls);
+  if (offscreen.length) scheduleOffscreenMermaid(offscreen, theme, gen);
+}
+
+async function renderOneMermaid({ el, code }, theme, sandbox) {
+  // Re-read the theme: for offscreen diagrams it may have flipped between
+  // queue-time and render-time.
+  const liveTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const cacheable = mermaidCodeIsCacheable(code);
+  const cacheKey = cacheable ? mermaidKey(code, liveTheme) : null;
+  if (cacheKey) {
+    const cachedSvg = mermaidCacheGet(cacheKey);
+    if (cachedSvg !== undefined) {
+      el.innerHTML = uniquifyMermaidSvgIds(cachedSvg, ++mermaidCounter);
+      el.setAttribute('data-processed', 'true');
+      el.setAttribute('data-theme', liveTheme);
+      applyMermaidContrast(el);
+      attachDiagramControls(el);
+      return;
+    }
+  }
+
+  const renderId = `mmd-${el.id}-${++mermaidCounter}`;
+  try {
+    const { svg, bindFunctions } = await mermaid.render(renderId, code, sandbox);
+    // Theme may have flipped mid-await; re-read before caching/stamping.
+    const postTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    el.innerHTML = svg;
+    el.setAttribute('data-processed', 'true');
+    el.setAttribute('data-theme', postTheme);
+    if (cacheable) mermaidCacheSet(mermaidKey(code, postTheme), svg);
+    if (typeof bindFunctions === 'function') bindFunctions(el);
+    applyMermaidContrast(el);
+    attachDiagramControls(el);
+  } catch (err) {
+    console.warn('Mermaid render error:', err);
+    renderMermaidError(el, err, code);
+  }
+}
+
+// Lazy-render off-screen diagrams via a single reused IntersectionObserver.
+let _mermaidLazyObserver = null;
+let _mermaidLazyQueue = new WeakMap();
+function scheduleOffscreenMermaid(items, theme, gen) {
+  if (!('IntersectionObserver' in window)) {
+    const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 300));
+    ric(async () => {
+      if (isStaleRender(gen)) return;
+      const sandbox = ensureMermaidSandbox();
+      for (const d of items) {
+        if (isStaleRender(gen)) return;
+        if (d.el.getAttribute('data-processed') === 'true' &&
+            d.el.getAttribute('data-theme') === (document.documentElement.getAttribute('data-theme') || 'dark')) continue;
+        await renderOneMermaid(d, theme, sandbox);
+        await yieldToMain();
+      }
+      sandbox.innerHTML = '';
+    });
+    return;
+  }
+
+  if (!_mermaidLazyObserver) {
+    _mermaidLazyObserver = new IntersectionObserver(async (entries) => {
+      const sandbox = ensureMermaidSandbox();
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const el = entry.target;
+        const info = _mermaidLazyQueue.get(el);
+        if (!info) { _mermaidLazyObserver.unobserve(el); continue; }
+        _mermaidLazyObserver.unobserve(el);
+        _mermaidLazyQueue.delete(el);
+        if (isStaleRender(info.gen)) continue;
+        const liveTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+        // Skip if already processed under the CURRENT theme.
+        if (el.getAttribute('data-processed') === 'true' &&
+            el.getAttribute('data-theme') === liveTheme) continue;
+        // renderOneMermaid re-reads the live theme, so stale info.theme is safe.
+        await renderOneMermaid({ el, code: info.code }, liveTheme, sandbox);
+        await yieldToMain();
+      }
+    }, { root: previewWrap, rootMargin: '400px 0px' });
+  }
+
+  for (const d of items) {
+    _mermaidLazyQueue.set(d.el, { code: d.code, gen, theme });
+    _mermaidLazyObserver.observe(d.el);
+  }
+}
+
+function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch { return s; }
 }
 
 // Lucide alert-triangle, inlined so the error card has no external deps.
@@ -1182,13 +1240,11 @@ function renderMermaidError(el, err, code) {
   const pre = document.createElement('pre');
   pre.className = 'mermaid-error__source';
   const lines = code.split('\n');
-  const pad = String(lines.length).length;
   pre.innerHTML = lines.map((text, i) => {
     const n = i + 1;
     const cls = n === badLine ? ' is-bad' : '';
-    const gutter = String(n).padStart(pad, ' ');
     return `<span class="mermaid-error__line${cls}">`
-      + `<span class="mermaid-error__ln" aria-hidden="true">${gutter}</span>`
+      + `<span class="mermaid-error__ln" aria-hidden="true">${n}</span>`
       + `<span class="mermaid-error__code">${escapeHtml(text) || ' '}</span>`
       + `</span>`;
   }).join('');
@@ -1218,72 +1274,55 @@ function renderMermaidError(el, err, code) {
   el.appendChild(btn);
 }
 
-// ---- Mermaid contrast normalization ---------------------------------------
-// Problem: Mermaid renders node text using a single theme-level color
-// (primaryTextColor / nodeTextColor). When users override fills per-node
-// via `style A fill:#E0E7FF`, dark-theme's near-white text becomes illegible
-// on light user fills (e.g. white-on-lavender ≈ 1.5:1).
-//
-// Solution: after render, inspect each node/edge-label's ACTUAL fill,
-// compute WCAG relative luminance, and pick #0f172a or #f8fafc for the
-// text — whichever yields the higher contrast ratio (target ≥ 4.5:1 AA).
-// We mark processed elements with data-mdlab-contrast so CSS fallbacks
-// defer to the inline styles.
-const MDLAB_DARK_FG  = '#0f172a';   // slate-900
-const MDLAB_LIGHT_FG = '#f8fafc';   // slate-50
-// Canvas background under untouched edge labels (matches --mermaid-bg dark).
-const MDLAB_EDGE_BG_DARK = '#0f141c';
+// ── Mermaid contrast normalization ───────────────────────────────────
+// Mermaid's theme-level text color can't see per-node `style X fill:#...`
+// overrides. We post-process: pick dark or light FG per node based on
+// WCAG luminance of the actual fill. `data-mdlab-contrast` makes CSS
+// fallbacks defer to the inline styles.
+const MDLAB_DARK_FG  = '#0f172a';
+const MDLAB_LIGHT_FG = '#f8fafc';
+// Canvas background behind untouched edge labels; reads active theme token.
+function mdlabEdgeBg() {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--mermaid-bg').trim();
+    return v || '#0f141c';
+  } catch { return '#0f141c'; }
+}
 
 function applyMermaidContrast(mermaidEl) {
-  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
   const svg = mermaidEl.querySelector('svg');
   if (!svg) return;
-  // Only needed in dark mode; light-mode mermaid defaults are already AA.
-  if (theme !== 'dark') {
-    svg.querySelectorAll('[data-mdlab-contrast]').forEach(n => n.removeAttribute('data-mdlab-contrast'));
-    return;
-  }
 
-  // --- Nodes (flowchart, class, state, ER top-level) ---
   svg.querySelectorAll('g.node').forEach((nodeG) => {
     const fill = resolveShapeFill(nodeG);
     if (!fill) return;
-    const fg = pickForegroundFor(fill);
-    paintNodeText(nodeG, fg);
+    paintNodeText(nodeG, pickForegroundFor(fill));
     nodeG.setAttribute('data-mdlab-contrast', '1');
   });
 
-  // --- Cluster / subgraph headers ---
   svg.querySelectorAll('g.cluster').forEach((clusterG) => {
     const fill = resolveShapeFill(clusterG);
     if (!fill) return;
-    const fg = pickForegroundFor(fill);
-    paintNodeText(clusterG, fg);
+    paintNodeText(clusterG, pickForegroundFor(fill));
     clusterG.setAttribute('data-mdlab-contrast', '1');
   });
 
-  // --- Edge labels: inspect the label's own rect, else fall back to the
-  //     diagram canvas colour (edges without a background pill sit directly
-  //     on the page). ---
+  // Edge labels: label's own rect first, foreignObject div's CSS bg second,
+  // diagram canvas colour last (edges without a pill sit on the page).
   svg.querySelectorAll('.edgeLabel').forEach((labelG) => {
-    // An .edgeLabel can be an HTML foreignObject wrapper or an SVG <g>.
-    // Find a fill rect if Mermaid emitted one.
     const rect = labelG.querySelector('rect, .label-container');
     let bg = rect ? readFillColor(rect) : null;
-    // For HTML labels, the div inside foreignObject may carry a CSS bg.
     if (!bg) {
       const fo = labelG.querySelector('foreignObject div, foreignObject span');
       if (fo) bg = readComputedBg(fo);
     }
-    if (!bg || bg === 'transparent') bg = MDLAB_EDGE_BG_DARK;
-    const fg = pickForegroundFor(bg);
-    paintLabelText(labelG, fg);
+    if (!bg || bg === 'transparent') bg = mdlabEdgeBg();
+    paintLabelText(labelG, pickForegroundFor(bg));
     labelG.setAttribute('data-mdlab-contrast', '1');
   });
 }
 
-// Find the first shape in a node group that carries a real fill value.
-// Order matters: some node shapes layer a transparent hit-target on top.
+// First shape with a real fill. Order matters — transparent hit-targets layer on top.
 function resolveShapeFill(group) {
   const shapes = group.querySelectorAll('rect, polygon, path, circle, ellipse');
   for (const shape of shapes) {
@@ -1293,9 +1332,8 @@ function resolveShapeFill(group) {
   return null;
 }
 
+// Inline style > attribute > computed style.
 function readFillColor(el) {
-  // Inline style > attribute > computed style. Mermaid frequently emits
-  // style="fill:#xxx;stroke:..." for per-node overrides.
   const inline = el.style && el.style.fill;
   if (inline) return inline;
   const attr = el.getAttribute('fill');
@@ -1317,11 +1355,9 @@ function readComputedBg(el) {
 }
 
 function paintNodeText(group, fg) {
-  // SVG <text> elements inside the node.
   group.querySelectorAll('text, tspan').forEach((t) => {
     t.style.setProperty('fill', fg, 'important');
   });
-  // HTML-rendered labels (flowchart htmlLabels: true path).
   group.querySelectorAll('foreignObject div, foreignObject span, foreignObject p, .nodeLabel, .label').forEach((d) => {
     d.style.setProperty('color', fg, 'important');
     d.style.setProperty('fill', fg, 'important');
@@ -1334,12 +1370,11 @@ function paintLabelText(labelG, fg) {
   });
   labelG.querySelectorAll('foreignObject div, foreignObject span, foreignObject p').forEach((d) => {
     d.style.setProperty('color', fg, 'important');
-    // Strip any leftover opaque bg that conflicts with the canvas.
     d.style.setProperty('background', 'transparent', 'important');
   });
 }
 
-// WCAG relative luminance → pick the better of our two neutrals.
+// WCAG relative luminance; pick the neutral with higher contrast.
 function pickForegroundFor(color) {
   const rgb = toRgb(color);
   if (!rgb) return MDLAB_LIGHT_FG;
@@ -1362,11 +1397,15 @@ function contrastRatio(L1, L2) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Parse hex (#rgb / #rrggbb), rgb(), rgba() into {r,g,b} 0-255. Returns
-// null for unrecognised inputs (e.g. `url(#grad)`).
+// Parse any CSS color → {r,g,b}. Fast paths for hex + rgb(); canvas fallback
+// for named/hsl/oklch/color-mix. Returns null only for truly unparseable input.
+let _mdlabColorCanvasCtx = null;
 function toRgb(input) {
   if (!input) return null;
   const s = String(input).trim().toLowerCase();
+  if (!s || s === 'none' || s === 'transparent' || s.startsWith('url(')) return null;
+
+  // Fast path: hex
   if (s.startsWith('#')) {
     const hex = s.slice(1);
     if (hex.length === 3) {
@@ -1383,12 +1422,46 @@ function toRgb(input) {
         b: parseInt(hex.slice(4, 6), 16),
       };
     }
+    if (hex.length === 8) { // #rrggbbaa — ignore alpha channel
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+      };
+    }
     return null;
   }
-  const m = s.match(/^rgba?\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+
+  // Fast path: rgb()/rgba()
+  const m = s.match(/^rgba?\(\s*(-?\d+(?:\.\d+)?)\s*,?\s+?(-?\d+(?:\.\d+)?)\s*,?\s+?(-?\d+(?:\.\d+)?)/)
+         || s.match(/^rgba?\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
   if (m) {
-    return { r: +m[1] | 0, g: +m[2] | 0, b: +m[3] | 0 };
+    return {
+      r: Math.max(0, Math.min(255, +m[1] | 0)),
+      g: Math.max(0, Math.min(255, +m[2] | 0)),
+      b: Math.max(0, Math.min(255, +m[3] | 0)),
+    };
   }
+
+  // Universal fallback: let the browser parse it. Covers named colors
+  // (aliceblue, tomato, …), hsl(), oklch(), color-mix(), and currentcolor.
+  try {
+    if (!_mdlabColorCanvasCtx) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      _mdlabColorCanvasCtx = c.getContext('2d', { willReadFrequently: true });
+    }
+    const ctx = _mdlabColorCanvasCtx;
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = '#000';
+    ctx.fillStyle = s;  // browser silently ignores invalid
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    // If the alpha is 0, the color was invalid or fully transparent.
+    if (d[3] === 0 && s !== 'black' && s !== '#000' && s !== '#000000') return null;
+    return { r: d[0], g: d[1], b: d[2] };
+  } catch { /* canvas blocked (strict CSP, some test envs) */ }
   return null;
 }
 
@@ -1529,7 +1602,7 @@ function toggleTaskAtIndex(targetIdx) {
   return false;
 }
 
-// ---------- Table of contents ----------
+// ── Table of contents ────────────────────────────────────────────────
 
 const TOC_ACTIVE_THRESHOLD_PX = 88;
 // Clears pane__header (40px) plus breathing room.
@@ -1850,13 +1923,16 @@ async function scrollPreviewToHeading(heading, { pinTocLink = null } = {}) {
   _tocScrollAbortController = new AbortController();
   const { signal } = _tocScrollAbortController;
 
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const target = targetScrollTopForHeading(heading);
+
+// TOC scroll lock: stashes expected scroll position so the preview scroll
+// handler can detect user-drift with a single scalar compare per frame.
   if (_tocHeadingsCache.some(h => h.id === id)) {
-    _tocScrollLock = { id };
+    _tocScrollLock = { id, expectedTop: target };
     setActiveTocLink(id);
   }
 
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const target = targetScrollTopForHeading(heading);
   if (reduceMotion) {
     previewWrap.scrollTop = target;
   } else {
@@ -1872,6 +1948,7 @@ async function scrollPreviewToHeading(heading, { pinTocLink = null } = {}) {
 
     // Layout may have shifted (Mermaid/images settling) — nudge to corrected position.
     const corrected = targetScrollTopForHeading(liveHeading);
+    if (_tocScrollLock && _tocScrollLock.id === id) _tocScrollLock.expectedTop = corrected;
     if (Math.abs(corrected - previewWrap.scrollTop) > 2) {
       await smoothScrollTo(previewWrap, corrected, { duration: 180, signal });
       if (signal.aborted) return;
@@ -1971,10 +2048,10 @@ function applyTocToggle(visible, { silent = false } = {}) {
   if (!silent) showToast(on ? 'Outline on' : 'Outline off', 'info');
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TOC drawer (≤1100px): slide-in right-side panel with scrim + ESC-to-close.
-// Above 1100px the TOC is an in-flow column and none of this runs visibly.
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+// TOC drawer (≤1100px): slide-in right panel with scrim + ESC-to-close.
+// Above 1100px the TOC is an in-flow column and none of this runs.
+// ─────────────────────────────────────────────────────────────────────
 const TOC_DRAWER_MQ = window.matchMedia('(max-width: 1100px)');
 
 function isTocDrawerMode() {
@@ -2079,12 +2156,14 @@ function observeTocHeadings() {
   for (const h of _tocHeadingsCache) _tocHeadingObserver.observe(h);
 }
 
-// Lightbox: pan + zoom viewer for Mermaid SVGs.
-//
-// Zoom writes width/height ATTRIBUTES on the SVG (not CSS scale), so the
-// browser re-rasterizes vectors at each level — labels stay crisp, including
-// HTML inside <foreignObject>. Pan uses a translate() transform. `scale=1`
-// means the SVG's natural pixel size (the "100%" label).
+/**
+ * Lightbox: pan + zoom viewer for Mermaid SVGs.
+ *
+ * Zoom writes width/height ATTRIBUTES on the SVG (not CSS scale), so
+ * the browser re-rasterizes at each level — labels stay crisp, incl.
+ * HTML inside <foreignObject>. Pan uses a translate() transform.
+ * `scale=1` means the SVG's natural pixel size ("100%" label).
+ */
 const LB_PAD        = 90;    // stage-edge padding in fit calc
 const LB_MAX_FIT    = 4;     // cap so small diagrams don't balloon
 const LB_ZOOM_STEP  = 1.2;   // button / keyboard zoom factor
@@ -2210,39 +2289,8 @@ async function toggleLightboxTheme() {
   refreshLightboxSvg();
 }
 
-// Shared modal focus trap. Cycles Tab / Shift+Tab within the dialog's
-// visible focusable descendants. Handler stored on the root so install
-// + release calls are idempotent.
-function installFocusTrap(root) {
-  if (!root || root._focusTrap) return;
-  // offsetParent is null for position:fixed regardless of visibility,
-  // so use bounding box + computed style instead.
-  const isVisible = (el) => {
-    if (!el.isConnected) return false;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
-    const cs = getComputedStyle(el);
-    return cs.visibility !== 'hidden' && cs.display !== 'none';
-  };
-  const handler = (e) => {
-    if (e.key !== 'Tab') return;
-    const focusables = Array.from(root.querySelectorAll(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )).filter(isVisible);
-    if (focusables.length === 0) { e.preventDefault(); return; }
-    const first = focusables[0], last = focusables[focusables.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
-  };
-  root.addEventListener('keydown', handler);
-  root._focusTrap = handler;
-}
-function releaseFocusTrap(root) {
-  if (!root || !root._focusTrap) return;
-  root.removeEventListener('keydown', root._focusTrap);
-  root._focusTrap = null;
-}
+// Shared modal focus trap lives in overlays.js (installFocusTrap /
+// releaseFocusTrap). Lightbox + Shortcuts + About all share it.
 
 let lightboxHintTimer;
 function showLightboxHint() {
@@ -2330,13 +2378,9 @@ function inlineComputedStyles(liveRoot, cloneRoot) {
   }
 }
 
-// Rasterize an inline SVG to a 2x PNG. Key edge cases we handle:
-//  · <foreignObject> labels don't rasterize via <img> in any browser — we
-//    replace them with native <text> before export.
-//  · Mermaid's class-based <style> rules don't survive the <img> load — we
-//    inline computed paint styles onto every element.
-//  · btoa can't handle multi-byte chars; fall back via TextEncoder + chunked
-//    binary string conversion (avoids call-stack overflow on large SVGs).
+// SVG → 2× PNG. Handles: <foreignObject> (replaced with native <text> —
+// no browser rasterizes FO via <img>); class-based <style> (inlined as
+// computed paint styles); multi-byte chars (TextEncoder + chunked btoa).
 function bytesToBinaryString(bytes) {
   let s = '';
   const CHUNK = 0x8000;
@@ -2617,19 +2661,50 @@ preview.addEventListener('click', (e) => {
   toggleTaskAtIndex(idx);
 });
 
-const scheduleRender = debounce(render, 120);
+// Adaptive debounce. Size thresholds: 8K/40K/80K → 90/140/220/320 ms.
+// Mermaid penalty: +80 ms at 6+ diagrams, +160 ms total at 16+.
+let _renderTimer = 0;
+function scheduleRender() {
+  const src = editor.value;
+  const size = src.length;
+  const mermaidBlocks = (size > 4096) ? countMermaidFences(src) : 0;
+  let delay;
+  if (size < 8 * 1024)       delay = 90;
+  else if (size < 40 * 1024) delay = 140;
+  else if (size < 80 * 1024) delay = 220;
+  else                       delay = 320;
+  if (mermaidBlocks >= 6) delay += 80;
+  if (mermaidBlocks >= 16) delay += 80;
+  if (_renderTimer) clearTimeout(_renderTimer);
+  _renderTimer = setTimeout(() => { _renderTimer = 0; render(); }, delay);
+}
+
+function countMermaidFences(src) {
+  let count = 0;
+  let idx = 0;
+  while ((idx = src.indexOf('```mermaid', idx)) !== -1) { count++; idx += 10; }
+  return count;
+}
+
+// rAF-coalesced gutter update. Keeps the `input` handler non-blocking;
+// updateGutter rebuilds the mirror and forces layout on large docs.
+let _gutterRafId = 0;
+function scheduleGutterUpdate() {
+  if (_gutterRafId) return;
+  _gutterRafId = requestAnimationFrame(() => {
+    _gutterRafId = 0;
+    updateGutter();
+  });
+}
 
 editor.addEventListener('input', () => {
-  // updateGutter() re-measures the mirror, so lineTops are current for the
-  // next scroll event even before the debounced render fires.
-  updateGutter();
+  scheduleGutterUpdate();
   scheduleRender();
 });
 
 // Editor key dispatcher — Cmd/Ctrl+B/I/K formatting, Tab/Shift+Tab list
-// indent, Enter list continuation. Each handler issues one value-swap and
-// dispatches a synthetic `input` event so the render + persist pipeline
-// runs exactly as if the user had typed.
+// indent, Enter list continuation. Each handler issues one value-swap +
+// a synthetic `input` event so render + persist run as if typed.
 editor.addEventListener('keydown', (e) => {
   const modKey = e.metaKey || e.ctrlKey;
 
@@ -2786,15 +2861,17 @@ function maybeContinueList(e) {
   return true;
 }
 
-// Scroll sync — editor ↔ preview.
-//
-// Two coordinate systems meet in the middle at "source line number":
-//   · Editor side: a hidden mirror <div> (same font/padding/wrap as textarea)
-//     gives us the real wrapped-line Y offsets in `lineTops[]`.
-//   · Preview side: `anchorMap` pairs each top-level preview child's
-//     offsetTop with the source line its block starts on.
-// On scroll, we find the visible source line on one side and interpolate the
-// corresponding scrollTop on the other.
+/**
+ * Scroll sync — editor ↔ preview.
+ *
+ * Two coordinate systems meet at "source line number":
+ *   · Editor: a hidden mirror <div> (same font/padding/wrap as the
+ *     textarea) gives real wrapped-line Y offsets in `lineTops[]`.
+ *   · Preview: `anchorMap` pairs each top-level child's offsetTop with
+ *     the source line its block starts on.
+ * On scroll, find the visible source line on one side and interpolate
+ * the corresponding scrollTop on the other.
+ */
 
 let scrollSyncEnabled = true;
 let scrollOwner = null;       // 'editor' | 'preview' | null — programmatic write lockout
@@ -2811,9 +2888,9 @@ let sourceBlockLines = [];
 let anchorMap = [];
 
 // 0-indexed start line of every top-level block in the source. Adjacent
-// paragraphs separated by a blank line → separate blocks. Fenced code and
-// $$…$$ block math are atomic so the result matches marked's 1:1 emission
-// (extractMath collapses each block-math region to a single paragraph).
+// paragraphs separated by a blank line → separate blocks. Fenced code
+// and $$…$$ block math are atomic — matches marked's 1:1 emission
+// (extractMath collapses each block-math region to one paragraph).
 function computeSourceBlockLines(src) {
   const lines = src.split('\n');
   const starts = [];
@@ -2944,6 +3021,9 @@ function computeSourceBlockLines(src) {
 let lineTops = [0];
 let mirrorTotalHeight = 0;
 let _editorPadTop = 16;
+// Last mirror snapshot; paired with editorMirror.children for incremental diff.
+let _mirrorLines = null;
+let _mirrorWidth = -1;
 
 function syncEditorMirror() {
   if (!editorMirror) return;
@@ -2954,12 +3034,29 @@ function syncEditorMirror() {
   // code will call us again once the editor becomes visible.
   const w = editor.clientWidth;
   if (w <= 0) return;
+
+  const lines = editor.value.split('\n');
+
+  // Incremental path requires unchanged width + valid snapshot + matching child count.
+  const widthUnchanged = w === _mirrorWidth;
+  const childCountMatches =
+    _mirrorLines !== null &&
+    editorMirror.children.length === _mirrorLines.length;
+
+  if (widthUnchanged && childCountMatches) {
+    syncEditorMirrorIncremental(lines);
+  } else {
+    syncEditorMirrorFull(lines, w);
+  }
+}
+
+// Full rebuild — used on width change, file switch, or first paint.
+function syncEditorMirrorFull(lines, w) {
   editorMirror.style.width = `${w}px`;
   _editorPadTop = parseFloat(getComputedStyle(editor).paddingTop) || 16;
 
   // One <div> per source line. Empty lines get a ZWSP so their line-box
   // has real height.
-  const lines = editor.value.split('\n');
   const frag = document.createDocumentFragment();
   for (let i = 0; i < lines.length; i++) {
     const div = document.createElement('div');
@@ -2973,9 +3070,10 @@ function syncEditorMirror() {
   for (let i = 0; i < kids.length; i++) tops[i] = kids[i].offsetTop;
   lineTops = tops;
   mirrorTotalHeight = editorMirror.offsetHeight;
-  // Mirror was rebuilt — re-sync its translateY so highlights don't snap
-  // back to the top of the textarea.
-  syncEditorMirrorScroll();
+  _mirrorLines = lines.slice();
+  _mirrorWidth = w;
+  // Use transform helper (not syncEditorMirrorScroll) — this is a rebuild, not a scroll.
+  writeEditorMirrorTransform();
   if (isFindBarOpen()) {
     const q = document.getElementById('find-input')?.value || '';
     const re = q ? buildFindRegex(q) : null;
@@ -2983,6 +3081,129 @@ function syncEditorMirror() {
     const active = _findState.editorMarks?.[_findState.index];
     if (active) active.classList.add('editor-hl--active');
   }
+}
+
+// Incremental rebuild — only touches divs whose source line actually changed.
+// Preserves .editor-hl spans on unchanged lines so find-bar highlights survive typing.
+function syncEditorMirrorIncremental(lines) {
+  const oldLines = _mirrorLines;
+  const n = Math.min(oldLines.length, lines.length);
+
+  let p = 0;
+  while (p < n && oldLines[p] === lines[p]) p++;
+
+  let oq = oldLines.length;
+  let nq = lines.length;
+  while (oq > p && nq > p && oldLines[oq - 1] === lines[nq - 1]) {
+    oq--; nq--;
+  }
+
+  if (p === oq && p === nq) return;
+
+  const kids = editorMirror.children;
+
+  // Overwrite text content on the overlap [p, min(oq, nq)).
+  const overlapEnd = Math.min(oq, nq);
+  for (let i = p; i < overlapEnd; i++) {
+    const text = lines[i];
+    kids[i].textContent = text === '' ? '​' : text;
+  }
+
+  // Remove surplus trailing divs when old range is longer than new.
+  for (let i = oq - 1; i >= nq; i--) {
+    kids[i].remove();
+  }
+
+  // Append/insert new divs when the new range is longer.
+  if (nq > oq) {
+    const frag = document.createDocumentFragment();
+    for (let i = oq; i < nq; i++) {
+      const div = document.createElement('div');
+      div.textContent = lines[i] === '' ? '​' : lines[i];
+      frag.appendChild(div);
+    }
+    const anchor = editorMirror.children[oq] || null;
+    if (anchor) editorMirror.insertBefore(frag, anchor);
+    else editorMirror.appendChild(frag);
+  }
+
+  _mirrorLines = lines.slice();
+
+  // Skip the O(N) offsetTop re-read when we can prove lineTops haven't moved:
+  // single-line edit, no add/remove, neither old nor new text can wrap (length
+  // within ASCII no-wrap budget). Any non-ASCII char falls through to re-measure.
+  const childCount = editorMirror.children.length;
+  const singleLineEdit = oq === nq && p + 1 === overlapEnd;
+  let skipMeasure = false;
+  if (singleLineEdit) {
+    const threshold = noWrapCharBudget();
+    if (threshold > 0) {
+      const oldText = oldLines[p];
+      const newText = lines[p];
+      if (oldText.length <= threshold && newText.length <= threshold &&
+          isPlainAscii(oldText) && isPlainAscii(newText)) {
+        skipMeasure = true;
+      }
+    }
+  }
+
+  if (!skipMeasure) {
+    const tops = new Array(childCount);
+    for (let i = 0; i < childCount; i++) tops[i] = editorMirror.children[i].offsetTop;
+    lineTops = tops;
+    mirrorTotalHeight = editorMirror.offsetHeight;
+  }
+
+  writeEditorMirrorTransform();
+
+  // Find-bar repaint: textContent writes above nuke any <span.editor-hl>
+  // on changed lines; re-scan while the bar is open (cheap, rare state).
+  if (isFindBarOpen()) {
+    const q = document.getElementById('find-input')?.value || '';
+    const re = q ? buildFindRegex(q) : null;
+    if (re) _findState.editorMarks = highlightInEditorMirror(re);
+    const active = _findState.editorMarks?.[_findState.index];
+    if (active) active.classList.add('editor-hl--active');
+  }
+}
+
+// Printable ASCII only (32..126). Gates the no-wrap measurement skip —
+// non-ASCII chars (CJK/emoji/tabs) can render wider than the 'M' probe predicts.
+function isPlainAscii(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 32 || c > 126) return false;
+  }
+  return true;
+}
+
+// Max chars guaranteed to fit on one visual row at current mirror width, or 0.
+// Cached per _mirrorWidth — probe only re-runs on actual width change.
+let _mirrorNoWrapBudget = 0;
+let _mirrorNoWrapBudgetWidth = -1;
+function noWrapCharBudget() {
+  if (!editorMirror) return 0;
+  if (_mirrorWidth === _mirrorNoWrapBudgetWidth) {
+    return _mirrorNoWrapBudget;
+  }
+  _mirrorNoWrapBudgetWidth = _mirrorWidth;
+  _mirrorNoWrapBudget = 0;
+
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;';
+  probe.textContent = 'MMMMMMMMMM';
+  editorMirror.appendChild(probe);
+  const probeWidth = probe.offsetWidth;
+  probe.remove();
+  if (probeWidth <= 0) return 0;
+  const charPx = probeWidth / 10;
+  const cs = getComputedStyle(editorMirror);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const contentWidth = editorMirror.clientWidth - padX;
+  if (contentWidth <= 0) return 0;
+  // 2-char safety margin for subpixel rounding.
+  _mirrorNoWrapBudget = Math.max(0, Math.floor(contentWidth / charPx) - 2);
+  return _mirrorNoWrapBudget;
 }
 
 function editorTopOfLine(line) {
@@ -3060,15 +3281,13 @@ function ensurePreviewObserver() {
 }
 
 // Separate from ensurePreviewObserver so the editor gets a resize hook
-// even when the preview is empty — which is the exact scenario where the
+// even when the preview is empty — the exact scenario where the
 // "line numbers don't appear on upload" bug used to bite (editor pane
-// transitions from 0-width to >0 width without a keystroke).
+// goes 0-width → >0 width without a keystroke).
 function ensureEditorObserver() {
   if (_editorResizeObserver || !('ResizeObserver' in window)) return;
   _editorResizeObserver = new ResizeObserver(() => {
-    // Both the mirror measurements and the gutter need to be re-painted
-    // when the editor's width changes (view switch, sidebar resize, window
-    // resize, or the editor pane becoming visible for the first time).
+    // Width change (view switch, sidebar resize, first reveal) → re-measure.
     syncEditorMirror();
     updateGutter();
     scheduleAnchorRebuild();
@@ -3125,16 +3344,45 @@ function lineForPreviewScroll(scrollTop) {
   return a.line + t * (b.line - a.line);
 }
 
+// will-change:transform promotion, active only while scrolling (~200ms idle release).
+let _scrollIdleTimer = 0;
+let _scrollPromoted = false;
+function markScrollingActive() {
+  if (!_scrollPromoted) {
+    if (editorMirror) editorMirror.style.willChange = 'transform';
+    const inner = gutter && gutter.firstElementChild;
+    if (inner) inner.style.willChange = 'transform';
+    _scrollPromoted = true;
+  }
+  if (_scrollIdleTimer) clearTimeout(_scrollIdleTimer);
+  _scrollIdleTimer = setTimeout(() => {
+    _scrollIdleTimer = 0;
+    _scrollPromoted = false;
+    if (editorMirror) editorMirror.style.willChange = 'auto';
+    const innerLater = gutter && gutter.firstElementChild;
+    if (innerLater) innerLater.style.willChange = 'auto';
+  }, 200);
+}
+
 function syncGutterToEditor() {
+  markScrollingActive();
   const inner = gutter.firstElementChild;
   if (inner) inner.style.transform = `translate3d(0, ${-editor.scrollTop}px, 0)`;
+}
+
+// Writes the mirror transform without touching will-change. Callers that
+// need compositor promotion must call markScrollingActive() themselves.
+function writeEditorMirrorTransform() {
+  if (!editorMirror) return;
+  editorMirror.style.transform = `translate3d(0, ${-editor.scrollTop}px, 0)`;
 }
 
 // Keep the overlay mirror in lock-step with the textarea. Mirror sits at
 // top:0; we simulate scrollTop via a negative translateY.
 function syncEditorMirrorScroll() {
   if (!editorMirror) return;
-  editorMirror.style.transform = `translate3d(0, ${-editor.scrollTop}px, 0)`;
+  markScrollingActive();
+  writeEditorMirrorTransform();
 }
 
 // rAF-batched so native momentum scrolling on one pane doesn't starve the
@@ -3180,13 +3428,12 @@ editor.addEventListener('scroll', () => {
 }, { passive: true });
 
 previewWrap.addEventListener('scroll', () => {
+  // Drift check via cached expectedTop scalar — no DOM queries per frame.
   if (_tocScrollLock && !_tocScrollAbortController) {
-    const locked = preview.querySelector(`#${cssEscape(_tocScrollLock.id)}`);
-    if (!locked) {
+    const expected = _tocScrollLock.expectedTop;
+    if (typeof expected !== 'number' ||
+        Math.abs(previewWrap.scrollTop - expected) > 20) {
       _tocScrollLock = null;
-    } else {
-      const expected = targetScrollTopForHeading(locked);
-      if (Math.abs(previewWrap.scrollTop - expected) > 20) _tocScrollLock = null;
     }
   }
   schedulePreviewToEditor();
@@ -3210,17 +3457,10 @@ function writeScrollState() {
 // then, any programmatic-scroll lockout (~50ms) has long since cleared.
 const schedulePersistScroll = debounce(writeScrollState, 250);
 
-// Flush synchronously on unload. Two caveats:
-//   1. IndexedDB can't complete async writes during unload on modern
-//      browsers — the transaction is aborted. We still fire the save so
-//      browsers that *do* flush their tx queue (some older Chrome versions)
-//      can complete the write.
-//   2. If there are still dirty files when the user tries to close, the
-//      returnValue triggers the browser's "leave site?" prompt. This is
-//      only reached when a save didn't complete in the usual 300ms window
-//      (e.g., user hit Cmd+W within 300ms of typing).
+// Synchronous flush on unload. IndexedDB transactions may be aborted by
+// modern browsers mid-unload; best-effort. returnValue prompts the user
+// only when dirty files remain (save didn't complete in the 300ms window).
 window.addEventListener('beforeunload', (e) => {
-  // Try a last-ditch save for the loaded file, even though IDB may drop it.
   if (_loadedFileId) {
     try {
       saveFileContent(_loadedFileId, editor.value, {
@@ -3261,10 +3501,10 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Restore saved editor + preview scroll for the active file. Uses
-// `_fileSwitching` to suppress both sync directions during the writes —
-// otherwise editor→preview sync would overwrite the saved preview scroll
-// with a computed one in the next frame.
+// Restore saved editor + preview scroll for the active file.
+// `_fileSwitching` suppresses both sync directions during the writes —
+// otherwise editor→preview sync would overwrite the saved preview
+// scroll with a computed one on the next frame.
 function restoreActiveFileScroll() {
   const f = Store.activeFile();
   if (!f) return;
@@ -3280,7 +3520,10 @@ function restoreActiveFileScroll() {
 
 function updateGutter() {
   syncEditorMirror();
-  const total = editor.value.split('\n').length;
+  // Reuse mirror's line split; fall back to a fresh split if mirror early-returned.
+  const total = (_mirrorLines && _mirrorLines.length)
+    ? _mirrorLines.length
+    : editor.value.split('\n').length;
   const tops = lineTops;
 
   let inner = gutter.firstElementChild;
@@ -3310,13 +3553,18 @@ function updateGutter() {
   for (let i = existing - 1; i >= total; i--) {
     inner.removeChild(spans[i]);
   }
-  gutter.dataset.count = String(total);
   inner.style.transform = `translateY(${-editor.scrollTop}px)`;
 }
 
+// Module-scope regex; reset via lastIndex per call.
+const _wordCountRe = /\b\w+\b/g;
+
 function updateStats(src) {
   const chars = src.length;
-  const words = (src.match(/\b\w+\b/g) || []).length;
+  // Count matches without allocating an array (src.match(re) materialises each match string).
+  _wordCountRe.lastIndex = 0;
+  let words = 0;
+  while (_wordCountRe.exec(src) !== null) words++;
   const lines = src ? src.split('\n').length : 0;
   statChars.textContent = chars.toLocaleString();
   statWords.textContent = words.toLocaleString();
@@ -3329,25 +3577,19 @@ function setStatus(kind, text) {
   statusText.textContent = text;
 }
 
-// ---------- File-level persistence --------------------------------------
-//
-// Every keystroke runs through `persist()` below. The file being edited is
-// captured at SCHEDULE time and saved to IndexedDB 300ms after the last
-// change. This matters: if the user types in File A then switches to File B
-// within 300ms, we must save to A, not to B. A per-file pending-save map
-// keeps each file's debounced save independent; switching files flushes
-// their pending save first so no keystrokes are lost.
+// ── File-level persistence ───────────────────────────────────────────
+// Per-keystroke debounced save (300ms). File ID is captured at schedule
+// time — switching tabs within the window must save to the original
+// file, not the new one. Per-file timer map keeps pending saves
+// independent; switchToFile flushes the outgoing file's pending save.
 
-let _loadedFileId = null;          // whichever file's content currently fills the editor
-let _fileSwitching = false;        // true while switching tabs — suppresses dirty marking
+let _loadedFileId = null;
+let _fileSwitching = false;
 
 const SAVE_DEBOUNCE_MS = 300;
 
-// One pending-save timer per file, keyed by fileId. Each closure snapshots
-// the fileId and reads `editor.value`/cursor/scroll at FIRE time — but only
-// if the file is still the one loaded in the editor. If the user has since
-// switched tabs, the outgoing file's content was already flushed during
-// `switchToFile`, so the stale timer becomes a no-op.
+// Timer-per-file. Closures snapshot fileId and read editor state at fire time,
+// guarded by _loadedFileId — stale timers after a tab switch become no-ops.
 const _saveTimers = new Map();
 
 function scheduleSaveForFile(fileId) {
@@ -3384,10 +3626,10 @@ function cancelSaveForFile(fileId) {
   if (t) { clearTimeout(t); _saveTimers.delete(fileId); }
 }
 
-// Called from the rendering pipeline (the `render()` function) whenever the
-// editor value changed. Mirrors the value into the active file, marks it
-// dirty, and schedules the debounced save SCOPED TO THAT SPECIFIC FILE —
-// so a pending save can never race against a tab switch.
+// Called from `render()` whenever editor value changed. Mirrors the
+// value into the active file, marks it dirty, and schedules the
+// debounced save SCOPED TO THAT FILE — a pending save can never race
+// a tab switch.
 function persist() {
   if (_fileSwitching) return;
   const f = Store.activeFile();
@@ -3422,7 +3664,7 @@ function updateFileIndicator(state = 'saved') {
   fileIndicator.append(nameEl, stateEl);
 }
 
-// ---- Projects bootstrap ------------------------------------------------
+// ── Projects bootstrap ───────────────────────────────────────────────
 
 async function bootstrapProjects() {
   await loadAll({ fallbackContent: EXAMPLES.welcome.content });
@@ -3450,6 +3692,7 @@ async function bootstrapProjects() {
         switchToFile(Store.activeId);
       } else {
         editor.value = '';
+        invalidateRenderCache();
         updateFileIndicator();
         safeUpdateGutter();
         scheduleRender();
@@ -3465,6 +3708,7 @@ async function bootstrapProjects() {
   } else {
     editor.value = '';
   }
+  invalidateRenderCache();
   updateFileIndicator();
   // Double-rAF ensures the editor has real layout before we measure line Ys.
   requestAnimationFrame(() => requestAnimationFrame(updateGutter));
@@ -3508,6 +3752,7 @@ async function switchToFile(fileId) {
     // write the session to IndexedDB).
 
     editor.value = target.content || '';
+    invalidateRenderCache();
     updateFileIndicator();
 
     // Use safeUpdateGutter so line numbers paint reliably even if the editor
@@ -3537,11 +3782,9 @@ async function switchToFile(fileId) {
   }
 }
 
-// Schedule a gutter rebuild with two rAFs so the textarea's clientWidth is
-// finalized (needed right after a file switch or upload — the editor may be
-// in a pane that just became visible, and syncEditorMirror measures against
-// editor.clientWidth). This is the fix for "line numbers don't appear until
-// I edit" after loading a file.
+// Double-rAF so textarea clientWidth is finalized (post-file-switch the
+// editor pane may have just become visible). Fixes "line numbers don't
+// appear until I edit" after loading a file.
 function safeUpdateGutter() {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     updateGutter();
@@ -3550,10 +3793,10 @@ function safeUpdateGutter() {
   }));
 }
 
-// ---- Commands registered with the palette ------------------------------
-// Flat list of { title, subtitle?, shortcut?, icon, run } entries fuzzy-
-// matched against title + subtitle. Active-file commands omit themselves
-// when no file is loaded.
+// ── Palette commands ─────────────────────────────────────────────────
+// Flat list of { title, subtitle?, shortcut?, icon, run } entries,
+// fuzzy-matched against title + subtitle. Active-file commands omit
+// themselves when no file is loaded.
 function buildCommandList() {
   const active = Store.activeFile();
   const commands = [
@@ -3596,7 +3839,7 @@ function buildCommandList() {
   return commands;
 }
 
-// ---- File-lifecycle helpers for palette commands ----
+// ── File-lifecycle helpers for palette commands ──────────────────────
 
 async function renameActiveFileFlow() {
   const f = Store.activeFile();
@@ -3638,6 +3881,7 @@ function resetEditorWhenNoTabs() {
   if (Store.activeId) return;
   _loadedFileId = null;
   editor.value = '';
+  invalidateRenderCache();
   updateFileIndicator();
   safeUpdateGutter();
   scheduleRender();
@@ -3700,7 +3944,7 @@ function iconSvg(kind) {
 }
 
 async function newFileInActive() {
-  const active = Store.activeProject() || Store.projectList()[0] || (await createProject({ name: 'My documents' }));
+  const active = Store.focusedProject() || (await createProject({ name: 'My documents' }));
   const name = uniqueFileName(active.id, 'Untitled.md');
   const f = await createFile({ projectId: active.id, name, content: '' });
   switchToFile(f.id);
@@ -3725,8 +3969,12 @@ function applyTheme(theme, silent = false) {
     ? 'https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-dark.min.css'
     : 'https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-light.min.css';
   localStorage.setItem(THEME_KEY, theme);
-  // Only Mermaid needs re-running — everything else theming is CSS-variable
-  // driven.
+  // Mermaid SVGs bake theme colors. Clear the cache + invalidate live-DOM
+  // theme stamps so any concurrent render can't harvest stale-theme SVGs.
+  _mermaidCache.clear();
+  if (preview) {
+    preview.querySelectorAll('.mermaid[data-theme]').forEach(el => el.removeAttribute('data-theme'));
+  }
   setupMermaid();
   if (!silent) {
     rethemeMermaid();
@@ -3792,10 +4040,10 @@ dockOutline?.addEventListener('click', () => {
   applyTocToggle(!on);
   syncDockState();
 });
-// Dock auto-hide: fades to ~30% opacity while idle, snaps back on mouse
-// movement near the bottom-right. The mousemove listener is only bound
-// while focus mode is actually active — binding globally means every
-// cursor movement fires a no-op handler for the lifetime of the page.
+// Dock auto-hide: fades to ~30% opacity while idle, snaps back on
+// mouse movement near the bottom-right. The mousemove listener is only
+// bound while focus mode is active — a global binding would fire a
+// no-op handler for every cursor move for the lifetime of the page.
 let _focusDockIdleTimer = 0;
 let _focusDockMoveBound = false;
 function onFocusDockMove(e) {
@@ -3832,15 +4080,11 @@ function syncDockState() {
   dockReading?.setAttribute('aria-pressed', String(!!toggleProse.checked));
   dockOutline?.setAttribute('aria-pressed', String(toc?.dataset.collapsed !== 'true'));
 }
-// Sync in-page state for every fullscreen transition:
-//   • `body.is-fs` reflects *any* fullscreen (F11 on <html>, our own on
-//     <body>, etc.) so the chrome-hiding CSS still applies when the user
-//     presses F11 without going through focus mode.
-//   • Dock listener cleanup must run here too — otherwise the global
-//     mousemove listener would leak when the browser (not our exit path)
-//     drops fullscreen.
-//   • Pre-Safari-16.4 fires `webkitfullscreenchange` instead of the standard
-//     event — bind both so F11 works there too.
+// Sync state on every fullscreen transition. `body.is-fs` reflects ANY
+// fullscreen (F11 or our own) so chrome-hiding CSS still applies. Dock
+// listeners are cleaned up here to avoid a global mousemove leak when
+// the browser (not our exit path) drops fullscreen. Pre-Safari-16.4
+// fires webkitfullscreenchange instead of the standard event.
 function onFullscreenChange() {
   const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
   document.body.classList.toggle('is-fs', fs);
@@ -3887,10 +4131,10 @@ function restoreSplit() {
   const pct = Number(localStorage.getItem(SPLIT_KEY));
   if (pct && pct > 15 && pct < 85) applySplit(pct);
 }
-// Custom property instead of full grid-template-columns — lets the
-// [data-view=editor|preview] rules still collapse the layout. The `--split`
-// variable now lives on `.panes` (not `.workspace`) since the workspace
-// contains both the tabs strip and the panes row.
+// Custom property instead of a full grid-template-columns — lets the
+// [data-view=editor|preview] rules collapse the layout. `--split` lives
+// on `.panes` (not `.workspace`) since the workspace also contains the
+// tabs strip above the panes row.
 function panesEl() { return document.getElementById('panes') || workspace; }
 function applySplit(pct, { deferRebuild = false } = {}) {
   panesEl().style.setProperty('--split', `${pct}%`);
@@ -3908,12 +4152,29 @@ function currentSplitPct() {
 }
 {
   let dragging = false;
+  // Cached at mousedown to avoid forced layout per mousemove (500-1000 Hz on high-DPI pointers).
+  let _dragPanesRect = null;
+  let _dragTocOffset = 0;
+  let _dragLastX = 0;
+  let _dragRafPending = false;
   // Column 1 renders as `split% − tocOffset`, so add it back when mapping mouseX → split%.
   const tocOffsetPx = () => {
     const n = parseFloat(getComputedStyle(panesEl()).getPropertyValue('--toc-offset'));
     return Number.isFinite(n) ? n : 0;
   };
-  resizer.addEventListener('mousedown', () => { dragging = true; document.body.style.cursor = 'col-resize'; });
+  function flushDragSplit() {
+    _dragRafPending = false;
+    if (!dragging || !_dragPanesRect) return;
+    const pct = ((_dragLastX - _dragPanesRect.left + _dragTocOffset) / _dragPanesRect.width) * 100;
+    // Mirror rebuild is O(N); defer per-pixel, flush once on mouseup.
+    if (pct > 15 && pct < 85) applySplit(pct, { deferRebuild: true });
+  }
+  resizer.addEventListener('mousedown', () => {
+    dragging = true;
+    _dragPanesRect = panesEl().getBoundingClientRect();
+    _dragTocOffset = tocOffsetPx();
+    document.body.style.cursor = 'col-resize';
+  });
   resizer.addEventListener('keydown', (e) => {
     const cur = currentSplitPct();
     if (e.key === 'ArrowLeft')  { e.preventDefault(); applySplit(Math.max(15, cur - 2)); }
@@ -3921,15 +4182,16 @@ function currentSplitPct() {
   });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    const rect = panesEl().getBoundingClientRect();
-    const pct = ((e.clientX - rect.left + tocOffsetPx()) / rect.width) * 100;
-    // Mirror rebuild is O(N) with a forced layout; skip per-pixel during drag
-    // and flush once on mouseup below.
-    if (pct > 15 && pct < 85) applySplit(pct, { deferRebuild: true });
+    _dragLastX = e.clientX;
+    if (_dragRafPending) return;
+    _dragRafPending = true;
+    requestAnimationFrame(flushDragSplit);
   });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
+    _dragPanesRect = null;
+    _dragRafPending = false;
     document.body.style.cursor = '';
     requestAnimationFrame(() => {
       syncEditorMirror();
@@ -3973,7 +4235,12 @@ btnUpload.addEventListener('click', (e) => { e.stopPropagation(); fileInput.clic
 fileInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files || []);
   fileInput.value = '';
-  for (const f of files) await loadFile(f);
+  try {
+    for (const f of files) await loadFile(f);
+  } finally {
+    // Safety net: clear in case loadFile threw before consuming.
+    _pendingUploadProjectId = null;
+  }
 });
 
 folderInput?.addEventListener('change', async (e) => {
@@ -4058,17 +4325,23 @@ async function loadFile(file) {
   try {
     const text = await file.text();
 
-    // Upload goes into the currently-active project, or creates a seed one
-    // if the user is starting from zero.
-    const project =
-      Store.activeProject() ||
-      Store.projectList()[0] ||
+    // Resolve target project: pending scope > focused project > seed.
+    // Clear the pending scope on first use so later drops don't inherit it.
+    let project = null;
+    if (_pendingUploadProjectId && Store.projects.has(_pendingUploadProjectId)) {
+      project = Store.projects.get(_pendingUploadProjectId);
+    }
+    _pendingUploadProjectId = null;
+
+    project = project ||
+      Store.focusedProject() ||
       (await createProject({ name: 'My documents' }));
+
     const name = uniqueFileName(project.id, file.name);
     const f = await createFile({ projectId: project.id, name, content: text });
     await switchToFile(f.id);
 
-    showToast(`Imported ${file.name}`, 'success');
+    showToast(`Imported ${file.name} → ${project.name}`, 'success');
   } catch (err) {
     console.error(err);
     showToast(`Failed to read ${file.name}`, 'error');
@@ -4089,11 +4362,9 @@ function buildExamplesMenu() {
       </div>
     `;
     btn.addEventListener('click', async () => {
-      // Examples open as new files inside the active project so users can
-      // compare different examples side-by-side via tabs.
+      // Examples open inside the focused project so users can compare side-by-side via tabs.
       const project =
-        Store.activeProject() ||
-        Store.projectList()[0] ||
+        Store.focusedProject() ||
         (await createProject({ name: 'Examples' }));
       const name = uniqueFileName(project.id, `${key}.md`);
       const f = await createFile({ projectId: project.id, name, content: ex.content });
@@ -4229,10 +4500,10 @@ function baseFilename() {
   return stripped || 'document';
 }
 
-// Iteratively strips any trailing text-ish / output-format extension so
-// chained names like "report.pdf.md" collapse to "report" instead of only
-// dropping the final ".md". Leading dots (e.g. ".htaccess") are stripped
-// by the caller so dotfile names don't produce ".htaccess.html".
+// Iteratively strip any trailing text-ish / output-format extension so
+// chained names like "report.pdf.md" collapse to "report" instead of
+// only dropping the final ".md". Leading dots (e.g. ".htaccess") are
+// stripped by the caller so dotfiles don't produce ".htaccess.html".
 function stripKnownExt(name) {
   const re = /\.(md|markdown|txt|html?|pdf)$/i;
   let out = name;
@@ -4263,9 +4534,51 @@ async function inlineStylesheetOrLink(url) {
   return `<link rel="stylesheet" href="${escapeHtml(url)}">`;
 }
 
+// Render every `.mermaid` node that still holds raw source (offscreen / lazy)
+// so a downstream export captures inline SVG instead of literal diagram text.
+// A diagram counts as "rendered" when data-processed="true" AND contains an
+// <svg>, under the current theme. No-op when everything is already ready.
+async function ensureAllMermaidRendered() {
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const all = Array.from(preview.querySelectorAll('.mermaid'));
+  const pending = all.filter((el) => {
+    const ready = el.getAttribute('data-processed') === 'true'
+      && el.getAttribute('data-theme') === theme
+      && el.querySelector('svg');
+    return !ready;
+  });
+  if (!pending.length) return;
+
+  const sandbox = ensureMermaidSandbox();
+  for (const el of pending) {
+    const raw = el.getAttribute('data-mermaid-src');
+    const code = raw ? safeDecode(raw) : el.textContent;
+    if (!code || !code.trim()) continue;
+    if (!el.id) el.id = `mermaid-${++mermaidCounter}`;
+    // Detach from any lazy observer so it won't fight us later.
+    if (_mermaidLazyObserver) {
+      try { _mermaidLazyObserver.unobserve(el); } catch {}
+      _mermaidLazyQueue.delete(el);
+    }
+    await renderOneMermaid({ el, code }, theme, sandbox);
+  }
+  sandbox.innerHTML = '';
+}
+
 async function exportHtml() {
   const title = baseFilename();
   const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+  // Force-render any offscreen/unprocessed Mermaid diagrams so the downloaded
+  // HTML contains inline SVG (not raw `flowchart LR…` source). The lazy
+  // IntersectionObserver path only renders diagrams the user has scrolled
+  // near; without this, exports made before scrolling miss those diagrams.
+  try {
+    await ensureAllMermaidRendered();
+  } catch (err) {
+    console.warn('Mermaid pre-render for HTML export failed (continuing):', err);
+  }
+
   const temp = document.createElement('div');
   temp.innerHTML = preview.innerHTML;
   temp.querySelectorAll('.code-copy, .code-lang, .diagram-expand').forEach(el => el.remove());
@@ -4273,6 +4586,7 @@ async function exportHtml() {
     const t = w.querySelector('table');
     if (t) w.replaceWith(t);
   });
+
   const bodyHtml = temp.innerHTML;
 
   const katexUrl = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
@@ -4314,6 +4628,17 @@ blockquote { border-left: 3px solid var(--accent); padding: 4px 14px; color: var
 table { border-collapse: collapse; width: 100%; margin: 16px 0; }
 th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
 thead { background: ${theme === 'dark' ? '#161a23' : '#f1f3f8'}; }
+/* YAML frontmatter: two-column key/value table + pill chips for list values.
+   Mirrors the live preview's look so exports don't lose the metadata styling. */
+table.markdown-frontmatter { border-collapse: separate; border-spacing: 0; margin: 0 0 24px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: ${theme === 'dark' ? '#12161f' : '#fafbfc'}; table-layout: auto; font-size: 14px; }
+table.markdown-frontmatter > tbody > tr > th { width: 28%; min-width: 130px; padding: 10px 16px; text-align: right; font-weight: 600; font-size: 12.5px; letter-spacing: 0.02em; color: var(--muted); background: ${theme === 'dark' ? '#1a1f2b' : '#f1f3f8'}; border: 0; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: break-word; }
+table.markdown-frontmatter > tbody > tr > td { padding: 10px 16px; font-size: 14px; color: var(--text); border: 0; border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: anywhere; }
+table.markdown-frontmatter > tbody > tr:last-child > th, table.markdown-frontmatter > tbody > tr:last-child > td { border-bottom: 0; }
+table.markdown-frontmatter--nested { margin: 0; border: 1px solid var(--border); border-radius: 6px; background: ${theme === 'dark' ? '#0f1219' : '#ffffff'}; font-size: 13px; }
+table.markdown-frontmatter--nested > tbody > tr > th { background: ${theme === 'dark' ? '#151a24' : '#f6f8fa'}; font-size: 12px; }
+.frontmatter-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.frontmatter-chip { display: inline-block; padding: 2px 10px; font-size: 12.5px; line-height: 1.55; color: var(--accent); background: ${theme === 'dark' ? 'rgba(16,185,129,0.12)' : 'rgba(13,148,136,0.10)'}; border: 1px solid ${theme === 'dark' ? 'rgba(16,185,129,0.32)' : 'rgba(13,148,136,0.30)'}; border-radius: 999px; white-space: nowrap; }
+pre.markdown-frontmatter-raw { border-left: 3px solid #f59e0b; padding: 10px 14px; }
 img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
 .mermaid { text-align: center; background: ${theme === 'dark' ? '#0f1219' : '#fff'}; padding: 20px; border: 1px solid var(--border); border-radius: 8px; margin: 16px 0; }
 .markdown-alert { border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 16px 0; }
@@ -4456,7 +4781,7 @@ const MSG = ${msgs};
 (async () => {
   const report = (err) => parent.postMessage({ type: MSG.error, error: String(err?.message || err) }, '*');
   try {
-    const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs')).default;
+    const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs')).default;
     mermaid.initialize({
       startOnLoad: false,
       theme: 'base',
@@ -4527,6 +4852,16 @@ table { width: 100%; border-collapse: collapse; margin: 12px 0; border: 1px soli
 th, td { padding: 8px 12px; border-bottom: 1px solid #e5e7ec; text-align: left; font-size: 13px; vertical-align: top; word-break: break-word; }
 thead { background: #f1f3f8; }
 tr:last-child td { border-bottom: 0; }
+/* YAML frontmatter table (mirrors screen styles; simplified for print) */
+table.markdown-frontmatter { margin: 0 0 18px; border: 1px solid #d6dae3; border-radius: 8px; background: #fafbfc; table-layout: auto; page-break-inside: avoid; break-inside: avoid; }
+table.markdown-frontmatter > tbody > tr > th { width: 28%; min-width: 120px; padding: 8px 14px; text-align: right; font-weight: 600; font-size: 12px; color: #475569; background: #f1f3f8; border-right: 1px solid #e5e7ec; border-bottom: 1px solid #e5e7ec; vertical-align: middle; overflow-wrap: break-word; }
+table.markdown-frontmatter > tbody > tr > td { padding: 8px 14px; font-size: 13px; color: #0f172a; border-bottom: 1px solid #e5e7ec; vertical-align: middle; overflow-wrap: anywhere; }
+table.markdown-frontmatter > tbody > tr:last-child > th, table.markdown-frontmatter > tbody > tr:last-child > td { border-bottom: 0; }
+table.markdown-frontmatter--nested { margin: 0; border: 1px solid #e5e7ec; border-radius: 4px; background: #ffffff; font-size: 12px; }
+table.markdown-frontmatter--nested > tbody > tr > th { background: #f6f8fa; font-size: 11.5px; }
+.frontmatter-chips { display: block; line-height: 1.9; }
+.frontmatter-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 9px; font-size: 12px; line-height: 1.55; color: #0d9488; background: rgba(13,148,136,0.10); border: 1px solid rgba(13,148,136,0.30); border-radius: 999px; white-space: nowrap; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+pre.markdown-frontmatter-raw { background: #f6f8fa; border: 1px solid #d0d7de; border-left: 3px solid #f59e0b; border-radius: 6px; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0 0 14px; }
 blockquote { margin: 0 0 14px; padding: 6px 14px; border-left: 3px solid #0d9488; background: rgba(13,148,136,0.06); border-radius: 0 6px 6px 0; color: #334155; }
 blockquote > :first-child { margin-top: 8px; }
 blockquote > :last-child { margin-bottom: 8px; }
@@ -4552,6 +4887,7 @@ input[type='checkbox'] { accent-color: #0d9488; }
 function clearDoc() {
   if (!editor.value || confirm('Clear the current document?')) {
     editor.value = '';
+    invalidateRenderCache();
     const f = Store.activeFile();
     if (f) {
       markDirty(f.id);
@@ -4581,6 +4917,9 @@ let _findState = {
   wholeWord: false,
   replaceMode: false,
 };
+
+// Find-as-you-type debounce; module-scoped so closeFindBar can cancel pending scans.
+let _findDebounceTimer = 0;
 
 function isFindBarOpen() {
   return !!document.getElementById('find-bar')?.classList.contains('is-open');
@@ -4663,10 +5002,21 @@ function ensureFindBar() {
   const input = bar.querySelector('#find-input');
   const replaceInput = bar.querySelector('#find-replace-input');
 
-  input.addEventListener('input', () => runFind(input.value));
+  // 80ms debounce: under typing-feedback threshold, collapses key bursts into one scan.
+  const scheduleRunFind = (val) => {
+    clearTimeout(_findDebounceTimer);
+    _findDebounceTimer = setTimeout(() => runFind(val), 80);
+  };
+  input.addEventListener('input', () => scheduleRunFind(input.value));
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      // Flush pending scan before navigating so matches reflect the current query.
+      if (_findDebounceTimer) {
+        clearTimeout(_findDebounceTimer);
+        _findDebounceTimer = 0;
+        runFind(input.value);
+      }
       if (e.shiftKey) gotoMatch(-1);
       else gotoMatch(1);
     }
@@ -4720,6 +5070,11 @@ function closeFindBar() {
   const bar = document.getElementById('find-bar');
   if (!bar) return;
   bar.classList.remove('is-open');
+  // Cancel in-flight debounced scan so it doesn't repaint marks post-close.
+  if (_findDebounceTimer) {
+    clearTimeout(_findDebounceTimer);
+    _findDebounceTimer = 0;
+  }
   _findState.matches = [];
   _findState.previewMarks = [];
   _findState.editorMarks = [];
@@ -5120,11 +5475,9 @@ function buildHighlightFragment(text, re, makeWrapper, collector) {
   return { frag, capReached: collector.length >= FIND_CAP };
 }
 
-// Wrap regex hits in the preview with <mark class="find-match">.
-// Skips non-rendering containers (script/style/noscript), SVG (breaks
-// Mermaid), KaTeX (htmlAndMathml emits duplicate MathML + HTML text per
-// source token — wrapping would over-generate marks and misalign the zip),
-// and existing find-match wrappers.
+// Wrap regex hits in preview with <mark class="find-match">. Skips script/style/
+// noscript, SVG (breaks Mermaid), KaTeX (htmlAndMathml output doubles up), and
+// existing find-match wrappers.
 function highlightInPreview(re) {
   if (!preview) return [];
   const marks = [];
@@ -5545,226 +5898,6 @@ function emptyStateHtml() {
   `;
 }
 
-const SHORTCUTS = [
-  { group: 'View', items: [
-    ['⌘ / Ctrl + 1', 'Editor only'],
-    ['⌘ / Ctrl + 2', 'Split view'],
-    ['⌘ / Ctrl + 3', 'Preview only'],
-    ['⌘ / Ctrl + .', 'Toggle focus mode'],
-    ['⌘ / Ctrl + ⇧ + B', 'Toggle sidebar'],
-    ['Esc',          'Exit focus / close dialog'],
-  ]},
-  { group: 'Files & tabs', items: [
-    ['⌘ / Ctrl + P', 'Quick open / palette'],
-    ['⌘ / Ctrl + N', 'New file'],
-    ['⌘ / Ctrl + W', 'Close tab'],
-    ['⌘ / Ctrl + Tab', 'Next tab'],
-    ['⌘ / Ctrl + ⇧ + Tab', 'Previous tab'],
-    ['⌘ / Ctrl + O', 'Open .md file'],
-    ['F2',           'Rename file (in sidebar)'],
-    ['/',            'Focus sidebar search'],
-  ]},
-  { group: 'Editor', items: [
-    ['⌘ / Ctrl + B', 'Bold selection (**…**)'],
-    ['⌘ / Ctrl + I', 'Italic selection (_…_)'],
-    ['⌘ / Ctrl + K', 'Insert / edit link'],
-    ['⌘ / Ctrl + F', 'Find in file'],
-    ['⌘ / Ctrl + ⇧ + F', 'Find and replace'],
-    ['⌘ / Ctrl + H', 'Find and replace'],
-    ['Tab',          'Indent list item (or insert 2 spaces)'],
-    ['⇧ + Tab',      'Outdent list item'],
-    ['Enter',        'Continue list — blank line to exit'],
-  ]},
-  { group: 'Document', items: [
-    ['⌘ / Ctrl + ⇧ + K', 'Toggle theme'],
-    ['⌘ / Ctrl + L', 'Toggle outline'],
-    ['⌘ / Ctrl + S', 'Download markdown'],
-    ['⌘ / Ctrl + /', 'Show shortcuts'],
-  ]},
-  { group: 'Diagram viewer', items: [
-    ['+ / −',        'Zoom in / out'],
-    ['0',            'Fit to screen'],
-    ['Arrows',       'Pan'],
-    ['Scroll',       'Zoom at cursor'],
-    ['Double-click', 'Reset zoom'],
-    ['Drag',         'Pan'],
-  ]},
-];
-
-function renderShortcutKeys(s) {
-  // Split only on " + " between two non-plus chars, so tokens like "+ / −"
-  // stay intact rather than being misread as the separator.
-  const parts = [];
-  let buf = '';
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === ' ' && s[i + 1] === '+' && s[i + 2] === ' ' &&
-        buf.length > 0 && buf[buf.length - 1] !== '+' && buf[buf.length - 1] !== '−' &&
-        i + 3 < s.length && s[i + 3] !== '+' && s[i + 3] !== '−') {
-      parts.push(buf);
-      buf = '';
-      i += 2;
-      continue;
-    }
-    buf += s[i];
-  }
-  if (buf) parts.push(buf);
-  return parts.map(p => p === '⌘ / Ctrl' ? '<kbd>⌘</kbd>/<kbd>Ctrl</kbd>' : `<kbd>${p}</kbd>`).join(' + ');
-}
-
-function buildShortcutsOverlay() {
-  if (document.getElementById('shortcuts-overlay')) return;
-  const root = document.createElement('div');
-  root.className = 'shortcuts';
-  root.id = 'shortcuts-overlay';
-  root.setAttribute('role', 'dialog');
-  root.setAttribute('aria-modal', 'true');
-  root.setAttribute('aria-label', 'Keyboard shortcuts');
-  // No aria-hidden toggling — `.is-open` + display:none controls
-  // visibility. Toggling aria-hidden on role="dialog" is a WAI-ARIA
-  // APG anti-pattern (can trigger "hidden dialog" announcements).
-
-  const body = SHORTCUTS.map(g => `
-    <section class="shortcuts__group">
-      <h3>${g.group}</h3>
-      <dl>${g.items.map(([k, v]) =>
-        `<div><dt>${renderShortcutKeys(k)}</dt><dd>${v}</dd></div>`
-      ).join('')}</dl>
-    </section>
-  `).join('');
-
-  root.innerHTML = `
-    <div class="shortcuts__card" role="document">
-      <header class="shortcuts__header">
-        <h2>Keyboard shortcuts</h2>
-        <button class="shortcuts__close" aria-label="Close" title="Close (Esc)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </header>
-      <div class="shortcuts__body">${body}</div>
-    </div>
-  `;
-  document.body.appendChild(root);
-  root.addEventListener('click', (e) => { if (e.target === root) hideShortcuts(); });
-  root.querySelector('.shortcuts__close').addEventListener('click', hideShortcuts);
-}
-function showShortcuts() {
-  buildShortcutsOverlay();
-  const root = document.getElementById('shortcuts-overlay');
-  root.classList.add('is-open');
-  root._returnFocusTo = document.activeElement;
-  installFocusTrap(root);
-  setTimeout(() => root.querySelector('.shortcuts__close')?.focus(), 10);
-}
-function hideShortcuts() {
-  const root = document.getElementById('shortcuts-overlay');
-  if (!root) return;
-  root.classList.remove('is-open');
-  releaseFocusTrap(root);
-  const prev = root._returnFocusTo;
-  root._returnFocusTo = null;
-  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
-    try { prev.focus(); } catch {}
-  }
-}
-function toggleShortcuts() {
-  const root = document.getElementById('shortcuts-overlay');
-  if (root?.classList.contains('is-open')) hideShortcuts();
-  else showShortcuts();
-}
-
-// ─── About modal ─────────────────────────────────────────────
-// Markup lives in index.html so crawlers (including AI bots) read the
-// full copy and FAQ. JS only toggles visibility and wires FAQ tabs.
-//
-// Visibility contract (shared with Shortcuts overlay):
-//   `hidden`     — authoritative for closed state (drops a11y node)
-//   `.is-open`   — flips display:flex + animations
-//   focus trap installed on open, focus restored on close
-//   no aria-hidden (WAI-ARIA APG anti-pattern on role="dialog")
-function showAbout() {
-  const root = document.getElementById('about-modal');
-  if (!root) return;
-  root.hidden = false;
-  root.classList.add('is-open');
-  root._returnFocusTo = document.activeElement;
-  installFocusTrap(root);
-  // Lazy one-time wiring — users who never open the modal pay no cost.
-  if (!root._initialized) {
-    root.addEventListener('click', (e) => { if (e.target === root) hideAbout(); });
-    root.querySelector('#btn-about-close')?.addEventListener('click', hideAbout);
-    initAboutFaqTabs(root);
-    root._initialized = true;
-  }
-  setTimeout(() => root.querySelector('#btn-about-close')?.focus(), 10);
-}
-
-function hideAbout() {
-  const root = document.getElementById('about-modal');
-  if (!root) return;
-  root.classList.remove('is-open');
-  // Defer `hidden` so the fade-out animation plays. The is-open check
-  // guards against a quick reopen within the 200ms window.
-  setTimeout(() => { if (!root.classList.contains('is-open')) root.hidden = true; }, 200);
-  releaseFocusTrap(root);
-  const prev = root._returnFocusTo;
-  root._returnFocusTo = null;
-  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
-    try { prev.focus(); } catch {}
-  }
-}
-
-function toggleAbout() {
-  const root = document.getElementById('about-modal');
-  if (root?.classList.contains('is-open')) hideAbout();
-  else showAbout();
-}
-
-// WAI-ARIA "Tabs with Automatic Activation": click or arrow-key selects
-// + activates the panel. Only the active tab is in the tab order; Tab
-// exits the tablist. Panels stay in the DOM (only `hidden` flips) so
-// crawlers see every FAQ regardless of active tab.
-function initAboutFaqTabs(root) {
-  const tabs = Array.from(root.querySelectorAll('.about-modal__faq-tab'));
-  if (!tabs.length) return;
-
-  const activate = (tab, focus) => {
-    tabs.forEach(t => {
-      const panel = document.getElementById(t.getAttribute('aria-controls'));
-      const isActive = t === tab;
-      t.setAttribute('aria-selected', String(isActive));
-      t.tabIndex = isActive ? 0 : -1;
-      t.classList.toggle('is-active', isActive);
-      if (panel) panel.hidden = !isActive;
-    });
-    if (focus) tab.focus();
-  };
-
-  tabs.forEach((tab, i) => {
-    tab.addEventListener('click', () => activate(tab, false));
-    tab.addEventListener('keydown', (e) => {
-      switch (e.key) {
-        case 'ArrowRight':
-        case 'ArrowDown':
-          e.preventDefault();
-          activate(tabs[(i + 1) % tabs.length], true);
-          break;
-        case 'ArrowLeft':
-        case 'ArrowUp':
-          e.preventDefault();
-          activate(tabs[(i - 1 + tabs.length) % tabs.length], true);
-          break;
-        case 'Home':
-          e.preventDefault();
-          activate(tabs[0], true);
-          break;
-        case 'End':
-          e.preventDefault();
-          activate(tabs[tabs.length - 1], true);
-          break;
-      }
-    });
-  });
-}
 
 if (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:') {
   window.__mdlab = { render, editor, mermaid };

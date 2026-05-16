@@ -11,7 +11,7 @@ test.describe('Service worker', () => {
     const body = await res.text();
     // Bump this assertion when the SW version changes. Keeping it strict
     // forces us to update it intentionally.
-    expect(body).toContain("CACHE_VERSION = 'markdownlab-v6'");
+    expect(body).toContain("CACHE_VERSION = 'markdownlab-v8'");
     // Basic sanity checks.
     expect(body).toContain("SHELL");
     expect(body).toContain("CDN_PRECACHE");

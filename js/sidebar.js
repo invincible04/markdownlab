@@ -347,6 +347,13 @@ function bindControls() {
   });
 }
 
+// On phones the sidebar is a drawer; collapse it after opening a file so the editor surfaces.
+function closeDrawerOnNarrow() {
+  if (window.matchMedia(WIDE_QUERY).matches) return;
+  if (els.shell.dataset.sidebar !== 'open') return;
+  toggleSidebar(false);
+}
+
 export function toggleSidebar(force) {
   const wide = window.matchMedia(WIDE_QUERY).matches;
   const cur = els.shell.dataset.sidebar;
@@ -731,6 +738,7 @@ function renderFile(file, project) {
   row.addEventListener('click', (e) => {
     if (e.target.closest('[data-file-act]')) return;
     hooks.onOpenFile(file.id, { activate: true });
+    closeDrawerOnNarrow();
   });
   row.addEventListener('dblclick', (e) => {
     if (e.target.closest('[data-file-act]')) return;
@@ -740,6 +748,7 @@ function renderFile(file, project) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       hooks.onOpenFile(file.id, { activate: true });
+      closeDrawerOnNarrow();
     }
     if (e.key === 'F2') {
       e.preventDefault();
@@ -830,6 +839,7 @@ function renderSearchResults() {
       `;
       btn.addEventListener('click', () => {
         hooks.onOpenFile(file.id, { activate: true });
+        closeDrawerOnNarrow();
       });
       wrap.appendChild(btn);
     });

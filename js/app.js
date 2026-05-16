@@ -33,6 +33,10 @@ import {
   showShortcuts, hideShortcuts, toggleShortcuts,
   showAbout, hideAbout, toggleAbout,
 } from './overlays.js';
+import {
+  fetchMarkdownFromGitHub, fetchChildMarkdown,
+  resolvePathRelative, toRawUrl, toBlobUrl, toTreeUrl,
+} from './github.js';
 
 // ── DOM refs ─────────────────────────────────────────────────────────
 const editor         = document.getElementById('editor');
@@ -1509,6 +1513,9 @@ function postProcess() {
     pre.appendChild(btn);
   });
 
+  const _activeFile = Store.activeFile();
+  const ghSrc = _activeFile?.source?.kind === 'github' ? _activeFile.source : null;
+
   preview.querySelectorAll('a[href]').forEach((a) => {
     const href = a.getAttribute('href') || '';
     if (/^https?:/i.test(href) && !href.includes(location.host)) {
@@ -1526,7 +1533,7 @@ function postProcess() {
     }
 
     // Relative .md link → in-app navigation, preserving #fragment scroll.
-    if (!/^(?:https?:|mailto:|#)/i.test(href) && /\.md(?:#|$)/i.test(href)) {
+    if (!/^(?:https?:|mailto:|tel:|#|data:)/i.test(href) && /\.md(?:#|$)/i.test(href)) {
       const [rawPath, fragment] = href.split('#');
       let filename;
       try {
@@ -1548,13 +1555,43 @@ function postProcess() {
                 if (heading) scrollPreviewToHeading(heading);
               }));
             }).catch(() => {});
+          } else if (ghSrc) {
+            const targetPath = resolvePathRelative(ghSrc.path, rawPath);
+            loadGitHubChildFile(ghSrc, targetPath, fragment);
           } else {
             showToast(`File "${filename}" not found in this project`, 'warning');
           }
         });
+        if (ghSrc) {
+          a.dataset.ghRemote = '1';
+          a.title = `Load ${filename} from GitHub`;
+        }
       }
     }
+
+    // GitHub-sourced non-.md relative link → open on github.com (tree/ for folders, blob/ for files).
+    if (ghSrc && !/^(?:https?:|mailto:|tel:|#|data:)/i.test(href) && !/\.md(?:#|$)/i.test(href)) {
+      const [rawPath] = href.split('#');
+      const targetPath = resolvePathRelative(ghSrc.path, rawPath);
+      const isFolder = href.endsWith('/') || !/\.[a-z0-9]+$/i.test(rawPath);
+      a.href = isFolder
+        ? toTreeUrl({ ...ghSrc, path: targetPath })
+        : toBlobUrl({ ...ghSrc, path: targetPath });
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.dataset.ghRemote = '1';
+    }
   });
+
+  // GitHub-sourced media: rewrite relative src to raw.githubusercontent.com.
+  if (ghSrc) {
+    preview.querySelectorAll('img[src], video[src], audio[src], source[src]').forEach((el) => {
+      const s = el.getAttribute('src');
+      if (!s || /^(?:https?:|data:|blob:)/i.test(s)) return;
+      const targetPath = resolvePathRelative(ghSrc.path, s);
+      el.src = toRawUrl({ ...ghSrc, path: targetPath });
+    });
+  }
 
   // Wrap each top-level table in a scroll container so wide tables scroll
   // horizontally without breaking the natural 100% width of narrow tables.
@@ -4105,8 +4142,11 @@ function setView(view, silent = false) {
   // just the flex column that stacks the tab strip on top of the panes row.
   const panes = document.getElementById('panes');
   if (panes) panes.dataset.view = view;
+  // On mobile the Split button is hidden and `split` is CSS-aliased to the editor pane.
+  const narrow = window.matchMedia('(max-width: 900px)').matches;
+  const highlightView = narrow && view === 'split' ? 'editor' : view;
   document.querySelectorAll('.segmented__item[data-view]').forEach(btn => {
-    const on = btn.dataset.view === view;
+    const on = btn.dataset.view === highlightView;
     btn.classList.toggle('is-active', on);
     btn.setAttribute('aria-selected', String(on));
   });
@@ -4125,6 +4165,12 @@ function setView(view, silent = false) {
 }
 document.querySelectorAll('.segmented__item[data-view]').forEach(btn => {
   btn.addEventListener('click', () => setView(btn.dataset.view));
+});
+
+// Re-apply view on breakpoint change so the segmented button state stays truthful.
+window.matchMedia('(max-width: 900px)').addEventListener?.('change', () => {
+  const cur = localStorage.getItem(VIEW_KEY) || 'split';
+  setView(cur, true);
 });
 
 function restoreSplit() {
@@ -4231,7 +4277,16 @@ function restoreSyncPref() {
 
 btnSync.addEventListener('click', () => applySyncToggle(!scrollSyncEnabled));
 
-btnUpload.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+// On mobile (≤900px) the split-btn caret is hidden, so the main button doubles as the menu trigger.
+const _mobileTopbarMq = matchMedia('(max-width: 900px)');
+btnUpload.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (_mobileTopbarMq.matches) {
+    btnUpload.closest('.split-btn')?.querySelector('.dropdown__trigger')?.click();
+  } else {
+    fileInput.click();
+  }
+});
 fileInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files || []);
   fileInput.value = '';
@@ -4348,6 +4403,130 @@ async function loadFile(file) {
   }
 }
 
+// ── Load from GitHub URL ─────────────────────────────────────────────
+
+const ghModal       = document.getElementById('gh-load-modal');
+const ghModalForm   = document.getElementById('gh-load-form');
+const ghModalUrl    = document.getElementById('gh-load-url');
+const ghModalErr    = document.getElementById('gh-load-error');
+const ghModalClose  = document.getElementById('gh-modal-close');
+const ghModalCancel = document.getElementById('gh-modal-cancel');
+let _ghModalReturnFocus = null;
+
+function openGitHubLoadModal() {
+  if (!ghModal) return;
+  _ghModalReturnFocus = document.activeElement;
+  ghModalErr.hidden = true;
+  ghModalErr.textContent = '';
+  ghModal.classList.remove('is-loading');
+  ghModal.hidden = false;
+  ghModal.classList.add('is-open');
+  installFocusTrap(ghModal);
+  requestAnimationFrame(() => ghModalUrl?.focus());
+}
+
+function closeGitHubLoadModal() {
+  if (!ghModal || ghModal.hidden) return;
+  releaseFocusTrap(ghModal);
+  ghModal.classList.remove('is-open', 'is-loading');
+  ghModal.hidden = true;
+  ghModalForm?.reset();
+  ghModalErr.hidden = true;
+  if (_ghModalReturnFocus && document.contains(_ghModalReturnFocus)) {
+    try { _ghModalReturnFocus.focus(); } catch {}
+  }
+  _ghModalReturnFocus = null;
+}
+
+ghModalClose?.addEventListener('click', closeGitHubLoadModal);
+ghModalCancel?.addEventListener('click', closeGitHubLoadModal);
+ghModal?.addEventListener('click', (e) => {
+  if (e.target === ghModal) closeGitHubLoadModal();
+});
+ghModalForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = (ghModalUrl?.value || '').trim();
+  if (!url) {
+    ghModalUrl?.focus();
+    return;
+  }
+  ghModalErr.hidden = true;
+  ghModal.classList.add('is-loading');
+  ghModalForm.setAttribute('aria-busy', 'true');
+  try {
+    await loadFromGitHubUrl(url);
+    closeGitHubLoadModal();
+  } catch (err) {
+    ghModal.classList.remove('is-loading');
+    ghModalErr.textContent = err?.message || 'Failed to load.';
+    ghModalErr.hidden = false;
+    requestAnimationFrame(() => { try { ghModalUrl?.focus(); ghModalUrl?.select(); } catch {} });
+    console.warn('GitHub load failed:', err);
+  } finally {
+    ghModalForm.removeAttribute('aria-busy');
+  }
+});
+
+async function loadFromGitHubUrl(url) {
+  const { text, source, suggestedName } = await fetchMarkdownFromGitHub(url);
+
+  let project = null;
+  if (_pendingUploadProjectId && Store.projects.has(_pendingUploadProjectId)) {
+    project = Store.projects.get(_pendingUploadProjectId);
+  }
+  _pendingUploadProjectId = null;
+  project = project || Store.focusedProject() || (await createProject({ name: 'My documents' }));
+
+  const name = uniqueFileName(project.id, suggestedName);
+  const f = await createFile({ projectId: project.id, name, content: text, source });
+  await switchToFile(f.id);
+  const fileName = source.path.split('/').pop() || source.path;
+  showToast(`Loaded ${source.owner}/${source.repo} · ${fileName}`, 'success');
+}
+
+async function loadGitHubChildFile(parentSource, targetPath, fragment) {
+  const project = Store.activeProject();
+  if (!project) return;
+
+  // Match by exact path so docs/intro.md and tutorial/intro.md don't collide.
+  const existing = Store.filesIn(project.id).find(
+    (f) => f.source?.kind === 'github' &&
+           f.source.owner === parentSource.owner &&
+           f.source.repo  === parentSource.repo &&
+           f.source.ref   === parentSource.ref &&
+           f.source.path  === targetPath
+  );
+  if (existing) {
+    await switchToFile(existing.id);
+    if (fragment) scrollToFragmentAfterRender(fragment);
+    return;
+  }
+
+  showToast(`Fetching ${targetPath}…`, 'info');
+  try {
+    const { text, source, suggestedName } = await fetchChildMarkdown(parentSource, targetPath);
+    const name = uniqueFileName(project.id, suggestedName);
+    const f = await createFile({ projectId: project.id, name, content: text, source });
+    await switchToFile(f.id);
+    if (fragment) scrollToFragmentAfterRender(fragment);
+  } catch (err) {
+    console.warn('GitHub child load failed:', err);
+    if (err?.code === 'not_found') {
+      window.open(toBlobUrl({ ...parentSource, path: targetPath }), '_blank', 'noopener,noreferrer');
+      showToast('Linked file not found in repo — opened on GitHub instead.', 'warning');
+    } else {
+      showToast(err?.message || 'Failed to load linked file.', 'error');
+    }
+  }
+}
+
+function scrollToFragmentAfterRender(fragment) {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const heading = preview.querySelector(`#${cssEscape(fragment)}`);
+    if (heading) scrollPreviewToHeading(heading);
+  }));
+}
+
 function buildExamplesMenu() {
   examplesMenu.innerHTML = '';
   Object.entries(EXAMPLES).forEach(([key, ex]) => {
@@ -4437,7 +4616,9 @@ async function handleAction(action) {
     case 'copy-html':   return copy(preview.innerHTML, 'HTML copied');
     case 'copy-md':     return copy(editor.value, 'Markdown copied');
     case 'clear':       return clearDoc();
+    case 'upload-files': return fileInput?.click();
     case 'import-folder': return folderInput?.click();
+    case 'load-github-url': return openGitHubLoadModal();
   }
 }
 
@@ -4751,13 +4932,19 @@ function buildPrintPdfHtml(bodyInnerHtml, title) {
     if (t) w.replaceWith(t);
   });
 
-  const lightVars = JSON.stringify(mermaidThemeVars('light'));
-  const msgs = JSON.stringify({ ready: PDF_MSG_READY, error: PDF_MSG_ERROR });
+  // Print runtime lives in /js/pdf-print.js to satisfy `script-src 'self'`; config travels via JSON block.
+  const printScriptUrl = new URL('./pdf-print.js', import.meta.url).href;
+  const baseHref = new URL('.', location.href).href;
+  const config = JSON.stringify({
+    themeVars: mermaidThemeVars('light'),
+    msg: { ready: PDF_MSG_READY, error: PDF_MSG_ERROR },
+  });
 
   return `<!doctype html>
 <html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
+<base href="${escapeHtml(baseHref)}">
 <title>${escapeHtml(title)}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/atom-one-light.min.css" crossorigin="anonymous">
@@ -4776,51 +4963,8 @@ ${pdfInlineCss()}
 </head>
 <body>
 <article class="pdf-body" id="pdf-body">${temp.innerHTML}</article>
-<script type="module">
-const MSG = ${msgs};
-(async () => {
-  const report = (err) => parent.postMessage({ type: MSG.error, error: String(err?.message || err) }, '*');
-  try {
-    const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs')).default;
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'base',
-      securityLevel: 'strict',
-      fontFamily: 'Inter, system-ui, sans-serif',
-      themeVariables: ${lightVars},
-      flowchart:  { curve: 'basis' },
-      sequence:   { showSequenceNumbers: false, actorMargin: 50, useMaxWidth: false },
-      gantt:      { fontSize: 12, barHeight: 26, barGap: 6, topPadding: 56, leftPadding: 90 },
-    });
-    const nodes = Array.from(document.querySelectorAll('.mermaid'));
-    if (nodes.length) {
-      await mermaid.run({ nodes, suppressErrors: false }).catch(e => {
-        console.warn('Mermaid render error (some diagrams may be blank):', e);
-      });
-    }
-
-    // Ensure SVGs have explicit dimensions for print.
-    document.querySelectorAll('.mermaid svg').forEach(svg => {
-      const bb = svg.getBoundingClientRect();
-      if (bb.width)  svg.setAttribute('width',  String(Math.round(bb.width)));
-      if (bb.height) svg.setAttribute('height', String(Math.round(bb.height)));
-      svg.style.maxWidth = '100%';
-      svg.style.height = 'auto';
-    });
-
-    if (document.fonts && document.fonts.ready) await document.fonts.ready;
-    // Wait for all images (external <img> tags) to finish loading.
-    await Promise.all(Array.from(document.images).map(img =>
-      img.complete ? null :
-        new Promise(res => { img.addEventListener('load', res, { once: true }); img.addEventListener('error', res, { once: true }); })
-    ));
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    parent.postMessage({ type: MSG.ready }, '*');
-  } catch (err) {
-    report(err);
-  }
-})();
-<\/script>
+<script type="application/json" id="mdlab-pdf-config">${config.replace(/</g, '\\u003c')}</script>
+<script type="module" src="${escapeHtml(printScriptUrl)}"></script>
 </body>
 </html>`;
 }
@@ -5708,6 +5852,8 @@ function registerKeyboardShortcuts() {
       if (sc?.classList.contains('is-open')) { e.preventDefault(); hideShortcuts(); return; }
       const am = document.getElementById('about-modal');
       if (am?.classList.contains('is-open')) { e.preventDefault(); hideAbout(); return; }
+      const ghm = document.getElementById('gh-load-modal');
+      if (ghm?.classList.contains('is-open')) { e.preventDefault(); closeGitHubLoadModal(); return; }
       if (document.getElementById('palette')?.classList.contains('is-open')) {
         e.preventDefault(); closePalette(); return;
       }

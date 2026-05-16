@@ -35,6 +35,7 @@ MarkdownLab is a client-side Markdown workspace. Paste any content, watch it ren
 - **KaTeX math** — inline `$x$` and display `$$…$$` with MathML output for screen readers
 - **Syntax highlighting** across 190+ languages via highlight.js
 - **Multi-file projects** with sidebar, draggable tabs, fuzzy search, and `⌘P` command palette
+- **Load from any public GitHub URL** — paste a blob, raw, or repo URL; relative links and images resolve back to the repo
 - **Export** to self-contained HTML, vector PDF (native print), or Markdown source
 - **Zero backend** — IndexedDB on your device, DOMPurify on untrusted HTML, no analytics or cookies
 
@@ -92,7 +93,7 @@ async function render(src: string): Promise<string> {
 |---|---|
 | **Content** | GFM, footnotes, alerts, Mermaid (10 diagram types), KaTeX (inline + block), 190+ highlighted languages |
 | **Editing** | Live split preview with end-to-end latency under 40 ms, content-aware scroll sync, soft-wrapped editor with accurate line numbers, focus mode, reading mode |
-| **Projects** | Sidebar with projects + files, draggable tabs, fuzzy search, command palette (`⌘P`), dual-pane find-and-replace with regex, folder import, undoable delete |
+| **Projects** | Sidebar with projects + files, draggable tabs, fuzzy search, command palette (`⌘P`), dual-pane find-and-replace with regex, folder import, GitHub URL import, undoable delete |
 | **Diagrams** | Pinch, wheel, and keyboard-zoomable lightbox, in-viewer theme toggle, 2× PNG export with inlined computed styles, redraws on theme change, WCAG AA palette, structured parse-error card for Mermaid |
 | **Exports** | Self-contained HTML, vector PDF (native `window.print()`), Markdown source, clipboard copy of rendered HTML or source |
 | **UX** | Dark + light themes (WCAG AA in both), keyboard-first navigation, responsive drawer on mobile |
@@ -117,6 +118,7 @@ async function render(src: string): Promise<string> {
 - Fuzzy search across every project and file from the sidebar or palette
 - `⌘P` + `⌘Enter` creates a new file from the current query
 - 7-second undo toast on deletes — no accidental permanent loss
+- Load any public GitHub markdown by URL — `blob/`, `raw/`, or bare repo (default branch + README auto-resolved); relative `.md` links lazy-fetch on click, images resolve to `raw.githubusercontent.com`
 
 ### Diagrams
 - Interactive lightbox with drag-to-pan and two-finger pinch zoom on touch
@@ -271,7 +273,19 @@ GitHub Flavored Markdown (GFM) via the [`marked`](https://marked.js.org/) parser
 <details>
 <summary><b>Can I render Mermaid diagrams?</b></summary>
 
-Yes — any fenced block tagged <code>mermaid</code> renders as an interactive diagram. The viewer supports pinch (touch), wheel, and keyboard zoom, drag-to-pan, an in-viewer theme toggle, and 2× PNG export. All 10 diagram types Mermaid 10.9 supports.
+Yes — any fenced block tagged <code>mermaid</code> renders as an interactive diagram. The viewer supports pinch (touch), wheel, and keyboard zoom, drag-to-pan, an in-viewer theme toggle, and 2× PNG export. All 10 Mermaid diagram types: flowchart, sequence, class, state, ER, Gantt, pie, mindmap, gitGraph, journey.
+</details>
+
+<details>
+<summary><b>Can I open a README directly from GitHub?</b></summary>
+
+Yes. Use **Import → Load from GitHub URL** and paste any of:
+
+- A blob URL — `https://github.com/{owner}/{repo}/blob/{ref}/{path}.md`
+- A raw URL — `https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}.md`
+- A bare repo — `https://github.com/{owner}/{repo}` (default branch + README auto-resolved)
+
+Relative `.md` links inside the loaded file lazy-fetch on click. Images, video, and audio with relative `src` resolve to `raw.githubusercontent.com`. Non-markdown links open on `github.com` in a new tab. Public repos only.
 </details>
 
 <details>
@@ -301,7 +315,7 @@ All runtime dependencies are public, version-pinned, and loaded from jsdelivr on
 | [marked](https://marked.js.org/) | 12.0.2 |
 | [marked-gfm-heading-id](https://github.com/markedjs/marked-gfm-heading-id) | 3.1.3 |
 | [marked-footnote](https://github.com/bent10/marked-extensions) | 1.2.4 |
-| [mermaid](https://mermaid.js.org/) | 10.9.1 |
+| [mermaid](https://mermaid.js.org/) | 11.4.1 |
 | [KaTeX](https://katex.org/) | 0.16.11 |
 | [highlight.js](https://highlightjs.org/) | 11.10.0 |
 | [DOMPurify](https://github.com/cure53/DOMPurify) | 3.2.7 |

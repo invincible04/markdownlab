@@ -1656,14 +1656,20 @@ body:has(.palette.is-open) .focus-dock { display: none; }
   color: var(--text);
   padding: 10px 16px;
   font-size: 13px; font-weight: 500;
-  border-radius: 999px;
+  border-radius: 14px;
   box-shadow: var(--shadow-lg);
   opacity: 0; pointer-events: none;
   transition: opacity var(--t-base) var(--ease-out), transform var(--t-base) var(--ease-snap);
   z-index: 200;
-  display: flex; align-items: center; gap: 8px;
-  max-width: 90vw;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(560px, calc(100vw - 24px));
+  width: max-content;
+  /* Long single-token paths break gracefully; short messages stay on one line. */
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  text-align: left;
 }
+.toast > * { min-width: 0; }
 .toast.is-show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast[data-variant='success'] {
   border-color: color-mix(in srgb, var(--success) 50%, var(--border));
@@ -1671,6 +1677,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 .toast[data-variant='success']::before {
   content: ''; width: 8px; height: 8px; border-radius: 50%;
+  flex: 0 0 8px;
   background: var(--success);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 30%, transparent);
 }
@@ -1680,6 +1687,7 @@ body:has(.palette.is-open) .focus-dock { display: none; }
 }
 .toast[data-variant='error']::before {
   content: ''; width: 8px; height: 8px; border-radius: 50%;
+  flex: 0 0 8px;
   background: var(--danger);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 30%, transparent);
 }
@@ -3906,5 +3914,165 @@ mark.find-match--active {
 }
 @media (prefers-reduced-motion: reduce) {
   mark.find-match--active { animation: none; }
+}
+
+/* ─── Load-from-GitHub modal ───────────────────────────────────────── */
+.gh-modal {
+  position: fixed; inset: 0;
+  display: none;
+  align-items: center; justify-content: center;
+  background: color-mix(in srgb, #000 55%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  z-index: 520;
+  animation: about-fade 180ms ease-out;
+  padding: 20px;
+}
+.gh-modal.is-open { display: flex; }
+.gh-modal[hidden] { display: none !important; }
+
+.gh-modal__card {
+  width: min(520px, 100%);
+  display: flex; flex-direction: column;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: about-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gh-modal__header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg-elev-2), var(--bg-elev-1));
+}
+.gh-modal__title {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.gh-modal__title svg { color: var(--accent); }
+/* 44×44 minimum hit-target for WCAG / Apple HIG; visual chrome stays compact via inner padding. */
+.gh-modal__close {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+.gh-modal__close:hover {
+  color: var(--text);
+  background: var(--bg-elev-3);
+  border-color: var(--border);
+}
+.gh-modal__close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gh-modal__body {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 18px;
+}
+.gh-modal__label {
+  font-size: 12px; font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.gh-modal__input {
+  width: 100%;
+  /* font-size:16px — anything smaller triggers iOS Safari auto-zoom on focus. */
+  padding: 12px 14px;
+  font-size: 16px;
+  line-height: 1.4;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  color: var(--text);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.gh-modal__input::placeholder {
+  color: color-mix(in srgb, var(--text-muted) 80%, transparent);
+}
+.gh-modal__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.gh-modal__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.gh-modal__error {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--danger, #ef4444);
+  background: color-mix(in srgb, var(--danger, #ef4444) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 45%, transparent);
+  border-radius: 6px;
+}
+.gh-modal__error[hidden] { display: none; }
+
+.gh-modal__actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 6px;
+}
+.gh-modal__spinner {
+  display: none;
+  width: 14px; height: 14px;
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: gh-spin 700ms linear infinite;
+  margin-left: 8px;
+}
+.gh-modal.is-loading .gh-modal__spinner { display: inline-block; }
+.gh-modal.is-loading .gh-modal__input,
+.gh-modal.is-loading #gh-modal-submit,
+.gh-modal.is-loading #gh-modal-cancel { pointer-events: none; opacity: 0.7; }
+@keyframes gh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .gh-modal,
+  .gh-modal__card { animation: none; }
+  .gh-modal__spinner { animation-duration: 1400ms; }
+}
+
+/* Up-arrow marker for text links only — image-wrapped badges shouldn't float a stray glyph. */
+#preview a[data-gh-remote="1"]:not(:has(img)):not(:has(svg))::after {
+  content: "↗";
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  vertical-align: super;
+  line-height: 0;
+  text-decoration: none;
+}
+
+/* "Upload from device" is mobile-only; on desktop the split button handles it directly. */
+.dropdown__item--mobile-only { display: none; }
+
+/* Phones: stack actions full-width for thumb reach. */
+@media (max-width: 480px) {
+  .gh-modal { padding: 12px; align-items: flex-end; }
+  .gh-modal__card { width: 100%; max-height: 92vh; }
+  .gh-modal__actions { flex-direction: column-reverse; }
+  .gh-modal__actions > .btn { width: 100%; justify-content: center; min-height: 44px; }
 }
 

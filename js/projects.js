@@ -287,7 +287,7 @@ export async function reorderProjects(newOrder) {
 
 // ── Files ────────────────────────────────────────────────────────────
 
-export async function createFile({ projectId, name = DEFAULT_FILE_NAME, content = '', emit = true } = {}) {
+export async function createFile({ projectId, name = DEFAULT_FILE_NAME, content = '', source = null, emit = true } = {}) {
   if (!Store.projects.get(projectId)) throw new Error('Unknown project');
   const siblings = Store.filesIn(projectId);
   const file = {
@@ -302,6 +302,7 @@ export async function createFile({ projectId, name = DEFAULT_FILE_NAME, content 
     scrollEditor: 0,
     scrollPreview: 0,
   };
+  if (source) file.source = source;
   Store.files.set(file.id, file);
   await DB.put('files', file);
   if (emit) Store.emit('file:created', { file });

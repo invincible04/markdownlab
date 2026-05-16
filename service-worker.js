@@ -11,7 +11,7 @@
  * activate() purges every cache whose name doesn't match.
  */
 
-const CACHE_VERSION = 'markdownlab-v6';
+const CACHE_VERSION = 'markdownlab-v8';
 
 const SHELL = [
   '/',
@@ -30,6 +30,8 @@ const SHELL = [
   '/js/frontmatter.js',
   '/js/math.js',
   '/js/overlays.js',
+  '/js/pdf-print.js',
+  '/js/github.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

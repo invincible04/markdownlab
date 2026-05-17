@@ -30,7 +30,7 @@ jobs:
       - name: Lychee (offline, internal refs only)
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline --verbose --no-progress './**/*.md' './**/*.html' './.github/**/*.md'
+          args: --offline --verbose --no-progress --root-dir "${{ github.workspace }}" './**/*.md' './**/*.html' './.github/**/*.md'
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

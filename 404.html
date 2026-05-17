@@ -56,8 +56,6 @@
       display: grid;
       place-items: center;
       padding: clamp(24px, 5vw, 48px);
-      padding-top: calc(clamp(24px, 5vw, 48px) + env(safe-area-inset-top));
-      padding-bottom: calc(clamp(24px, 5vw, 48px) + env(safe-area-inset-bottom));
     }
 
     .nf-card {
@@ -231,7 +229,6 @@
       position: relative;
       z-index: 1;
       padding: 16px 24px 16px;
-      padding-bottom: calc(16px + env(safe-area-inset-bottom));
       text-align: center;
       color: var(--text-dim);
       font-size: 12px;

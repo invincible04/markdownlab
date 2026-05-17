@@ -274,6 +274,26 @@ async function init() {
     console.warn('Ignoring query-param action:', err);
   }
 
+  // Auto-load from a pasted URL: `/https://github.com/...` (path-prefix style,
+  // requires the SPA rewrite in vercel.json/_redirects/netlify.toml) or
+  // `?url=https://github.com/...` (query-param style, works on any host).
+  // replaceState strips the embedded URL so reloads don't refetch.
+  try {
+    const ghUrl = extractEmbeddedGitHubUrl(location);
+    if (ghUrl) {
+      const params = new URLSearchParams(location.search);
+      params.delete('url');
+      const qs = params.toString();
+      history.replaceState(null, '', '/' + (qs ? `?${qs}` : ''));
+      await loadFromGitHubUrl(ghUrl).catch((err) => {
+        console.warn('Auto-load from URL failed:', err);
+        showToast(err?.message || 'Failed to load from URL.', 'error');
+      });
+    }
+  } catch (err) {
+    console.warn('Ignoring embedded URL:', err);
+  }
+
   initPalette({
     onOpenFile: (id) => switchToFile(id),
     runCommand: (cmd) => {
@@ -4466,6 +4486,21 @@ ghModalForm?.addEventListener('submit', async (e) => {
     ghModalForm.removeAttribute('aria-busy');
   }
 });
+
+// Two pastable shapes route here:
+//   1. `/https://github.com/...` — server rewrite drops it on /index.html, the
+//      pathname is the embedded URL minus the leading slash.
+//   2. `?url=https://github.com/...` — works on hosts without the rewrite (e.g.
+//      `*.github.io`) and survives manifest sharing.
+// Some proxies collapse `//` after the scheme to `/`, so we tolerate `https:/`.
+function extractEmbeddedGitHubUrl(loc) {
+  const fromQuery = new URLSearchParams(loc.search).get('url');
+  if (fromQuery) return fromQuery.trim();
+
+  const m = loc.pathname.match(/^\/+(https?:\/{1,2}.+)$/i);
+  if (!m) return null;
+  return m[1].replace(/^(https?:)\/(?!\/)/i, '$1//');
+}
 
 async function loadFromGitHubUrl(url) {
   const { text, source, suggestedName } = await fetchMarkdownFromGitHub(url);

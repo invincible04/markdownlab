@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)" />
+  <meta name="robots" content="noindex" />
+  <title>Page not found — MarkdownLab</title>
+  <meta name="description" content="That page isn't here. Head back to the editor or paste a public GitHub markdown URL to load it directly." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="/css/tokens.css?v=15" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%23059669'/%3E%3Cstop%20offset='1'%20stop-color='%230891b2'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='url(%23g)'/%3E%3Cpath%20d='M10%2046V18h7l8%2012%208-12h7v28h-7V30l-8%2012-8-12v16H10z'%20fill='white'/%3E%3Cpath%20d='M44%2028h5v10h4l-6%208-6-8h4V28z'%20fill='white'/%3E%3C/svg%3E" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--font-body);
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Soft accent glow — pinned behind the card so any viewport feels framed.
+       Pointer-events:none keeps it out of click paths on small screens. */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: -20% -10% auto -10%;
+      height: 70vh;
+      background:
+        radial-gradient(60% 60% at 30% 30%, var(--accent-soft), transparent 70%),
+        radial-gradient(50% 50% at 75% 40%, color-mix(in srgb, var(--accent-b) 16%, transparent), transparent 70%);
+      filter: blur(6px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .nf-shell {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: clamp(24px, 5vw, 48px);
+      padding-top: max(clamp(24px, 5vw, 48px), env(safe-area-inset-top));
+      padding-bottom: max(clamp(24px, 5vw, 48px), env(safe-area-inset-bottom));
+    }
+
+    .nf-card {
+      width: 100%;
+      max-width: 640px;
+      background: var(--bg-elev-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-lg);
+      padding: clamp(28px, 5vw, 48px);
+      text-align: center;
+      animation: nf-rise var(--t-slow) var(--ease-out) both;
+    }
+    @keyframes nf-rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) { .nf-card { animation: none; } }
+
+    .nf-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: clamp(20px, 3vw, 28px);
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 600;
+      font-size: 14px;
+      letter-spacing: 0.01em;
+    }
+    .nf-brand__logo {
+      width: 28px; height: 28px;
+      display: block;
+      border-radius: 8px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .nf-code {
+      margin: 0;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      /* Fluid 64–144 so it dominates phones and looks balanced on desktops. */
+      font-size: clamp(64px, 16vw, 144px);
+      background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+      -webkit-background-clip: text;
+              background-clip: text;
+      color: transparent;
+      /* Subtle accent shadow under the numerals */
+      filter: drop-shadow(0 8px 24px var(--accent-soft));
+    }
+
+    .nf-title {
+      margin: clamp(8px, 1.5vw, 14px) 0 8px;
+      font-size: clamp(20px, 3.2vw, 28px);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .nf-lede {
+      margin: 0 auto;
+      max-width: 44ch;
+      color: var(--text-muted);
+      font-size: clamp(14px, 1.6vw, 16px);
+      line-height: 1.55;
+    }
+    .nf-lede code {
+      font-family: var(--font-mono);
+      font-size: 0.9em;
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+      background: var(--code-inline-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .nf-cta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: clamp(20px, 3vw, 28px);
+    }
+    .nf-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 11px 18px;
+      border-radius: var(--radius-md);
+      font: inherit;
+      font-weight: 600;
+      font-size: 14px;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: transform var(--t-fast) var(--ease-out),
+                  background-color var(--t-fast) var(--ease-out),
+                  border-color var(--t-fast) var(--ease-out),
+                  box-shadow var(--t-fast) var(--ease-out);
+    }
+    .nf-btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-ring);
+    }
+    .nf-btn--primary {
+      background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+      color: var(--text-on-accent);
+      box-shadow: var(--shadow-sm);
+    }
+    .nf-btn--primary:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+    .nf-btn--ghost {
+      background: var(--bg-elev-2);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .nf-btn--ghost:hover { border-color: var(--border-strong); }
+
+    .nf-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: clamp(24px, 4vw, 32px) auto 16px;
+      max-width: 360px;
+      color: var(--text-dim);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .nf-divider::before, .nf-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .nf-form {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    .nf-form input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 14px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+      transition: border-color var(--t-fast) var(--ease-out),
+                  box-shadow var(--t-fast) var(--ease-out);
+    }
+    .nf-form input::placeholder { color: var(--text-dim); }
+    .nf-form input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-ring);
+    }
+    .nf-hint {
+      margin: 10px auto 0;
+      max-width: 480px;
+      color: var(--text-dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .nf-foot {
+      position: relative;
+      z-index: 1;
+      padding: 16px 24px max(16px, env(safe-area-inset-bottom));
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+    .nf-foot a { color: var(--text-muted); text-decoration: none; }
+    .nf-foot a:hover { color: var(--text); }
+
+    /* Phone-shaped viewports: stack the form vertically so the button
+       gets a comfortable tap target instead of getting squeezed. */
+    @media (max-width: 480px) {
+      .nf-form { flex-direction: column; }
+      .nf-btn  { width: 100%; justify-content: center; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .nf-btn { transition: none; }
+      .nf-btn--primary:hover { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="nf-shell">
+    <section class="nf-card" role="alert" aria-labelledby="nf-title">
+      <a class="nf-brand" href="/" aria-label="MarkdownLab home">
+        <svg class="nf-brand__logo" viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+          <defs>
+            <linearGradient id="nf-logo-g" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="var(--accent-a)" />
+              <stop offset="1" stop-color="var(--accent-b)" />
+            </linearGradient>
+          </defs>
+          <rect width="64" height="64" rx="14" fill="url(#nf-logo-g)" />
+          <path d="M10 46V18h7l8 12 8-12h7v28h-7V30l-8 12-8-12v16H10z" fill="white" opacity="0.98" />
+          <path d="M44 28h5v10h4l-6 8-6-8h4V28z" fill="white" opacity="0.98" />
+        </svg>
+        <span>MarkdownLab</span>
+      </a>
+
+      <p class="nf-code" aria-hidden="true">404</p>
+      <h1 class="nf-title" id="nf-title">This page isn't here.</h1>
+      <p class="nf-lede">
+        The link is broken, or you've landed somewhere we don't render. If you wanted to view a markdown file, paste a public GitHub URL below — or jump back to the editor.
+      </p>
+
+      <div class="nf-cta">
+        <a class="nf-btn nf-btn--primary" href="/">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12 12 3l9 9" /><path d="M5 10v10h14V10" />
+          </svg>
+          Open editor
+        </a>
+        <a class="nf-btn nf-btn--ghost" href="https://github.com/invincible04/markdownlab" rel="noopener" target="_blank">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 .5a12 12 0 0 0-3.79 23.4c.6.11.82-.26.82-.58v-2.04c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.31.76-1.62-2.66-.3-5.46-1.33-5.46-5.93 0-1.31.47-2.39 1.24-3.23-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.31 1.23a11.5 11.5 0 0 1 6.03 0c2.3-1.55 3.31-1.23 3.31-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.92 1.23 3.23 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 12 .5Z" />
+          </svg>
+          View on GitHub
+        </a>
+      </div>
+
+      <div class="nf-divider" aria-hidden="true">or load a file</div>
+
+      <!-- action+method give a working no-JS fallback: the browser submits to
+           "/?url=…" and the SPA picks up the query in init(). With JS, 404.js
+           intercepts and uses location.assign so back-button history is clean. -->
+      <form class="nf-form" id="nf-load-form" action="/" method="get" autocomplete="off" novalidate>
+        <label for="nf-load-url" class="visually-hidden" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;">GitHub URL</label>
+        <input id="nf-load-url" name="url" type="url" inputmode="url" spellcheck="false"
+               placeholder="https://github.com/owner/repo/blob/main/README.md"
+               aria-label="Public GitHub markdown URL" />
+        <button class="nf-btn nf-btn--primary" type="submit">
+          Load
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14" /><path d="m13 6 6 6-6 6" />
+          </svg>
+        </button>
+      </form>
+      <p class="nf-hint">Public repos only. Blob, raw, and bare repo URLs all work.</p>
+    </section>
+  </main>
+
+  <footer class="nf-foot">
+    <a href="/">Home</a> · <a href="https://github.com/invincible04/markdownlab" rel="noopener" target="_blank">Source</a>
+  </footer>
+
+  <script src="/js/404.js?v=15" defer></script>
+</body>
+</html>

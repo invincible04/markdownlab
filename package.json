@@ -4,7 +4,8 @@
   "private": true,
   "description": "A fast, offline-capable Markdown editor. No build step; runs straight from static files.",
   "scripts": {
-    "serve": "python3 -m http.server 5173",
+    "serve": "python3 scripts/serve.py 5173",
+    "serve:plain": "python3 -m http.server 5173",
     "check": "for f in js/*.js service-worker.js; do node --check \"$f\" || exit 1; done && echo 'All JS files parse.'",
     "test": "playwright test",
     "test:headed": "playwright test --headed",

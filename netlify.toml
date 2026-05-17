@@ -7,6 +7,10 @@
   publish = "."
   command = ""
 
+# Redirect rules live in `_redirects` (single source of truth, also used by
+# Cloudflare Pages). When both files exist Netlify gives `_redirects` priority,
+# so duplicating them here would just be dead config.
+
 # Security + caching headers applied to every response.
 [[headers]]
   for = "/*"
@@ -17,7 +21,7 @@
     Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=()"
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Resource-Policy = "same-origin"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'sha256-M2waZU0+aDDZeRNrYpQnZmzs31SJjHqWBvNiBIBwwUU=' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'none'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'sha256-M2waZU0+aDDZeRNrYpQnZmzs31SJjHqWBvNiBIBwwUU=' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.githubusercontent.com https://github.com; connect-src 'self' https://cdn.jsdelivr.net https://api.github.com https://raw.githubusercontent.com; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'none'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
 
 # Service worker must always revalidate so updates propagate.
 [[headers]]

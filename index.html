@@ -51,12 +51,14 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="modulepreload" href="js/app.js?v=15" />
+  <!-- Absolute paths so the `/https://...` deep-link route doesn't resolve
+       assets relative to the embedded URL. -->
+  <link rel="modulepreload" href="/js/app.js?v=15" />
   <!-- tokens.css first — defines all CSS custom properties used by the rest. -->
-  <link rel="stylesheet" href="css/tokens.css?v=15" />
-  <link rel="stylesheet" href="css/styles.css?v=15" />
+  <link rel="stylesheet" href="/css/tokens.css?v=15" />
+  <link rel="stylesheet" href="/css/styles.css?v=15" />
   <!-- mobile.css last so @media rules win the cascade. -->
-  <link rel="stylesheet" href="css/mobile.css?v=15" />
+  <link rel="stylesheet" href="/css/mobile.css?v=15" />
 
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Lora:ital,wght@0,400..700;1,400..700&display=swap" />
 
@@ -75,12 +77,12 @@
        the listener is attached. -->
   <script>document.querySelectorAll('link[data-async-css]').forEach(function(l){if(l.sheet){l.media='all';return;}l.addEventListener('load',function(){l.media='all';},{once:true});});</script>
 
-  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="manifest" href="/manifest.webmanifest" />
 
   <!-- Inline SVG for modern browsers; PNGs for iOS (no SVG there).-->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%23059669'/%3E%3Cstop%20offset='1'%20stop-color='%230891b2'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='url(%23g)'/%3E%3Cpath%20d='M10%2046V18h7l8%2012%208-12h7v28h-7V30l-8%2012-8-12v16H10z'%20fill='white'/%3E%3Cpath%20d='M44%2028h5v10h4l-6%208-6-8h4V28z'%20fill='white'/%3E%3C/svg%3E" />
-  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
-  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
 
   <!-- @id wiring stitches all four nodes into one entity graph for Google.
        FAQPage is kept for AI crawlers — Google restricted FAQ rich results in 2023. -->
@@ -807,7 +809,7 @@
           </details>
           <details>
             <summary>Can I open a README directly from GitHub?</summary>
-            <p>Yes. Use <strong>Import → Load from GitHub URL</strong> and paste a blob URL (<code>github.com/{owner}/{repo}/blob/{ref}/{path}.md</code>), a raw URL, or a bare repo URL — the default branch and README are resolved automatically. Relative <code>.md</code> links lazy-fetch on click; images and media resolve to <code>raw.githubusercontent.com</code>. Public repos only.</p>
+            <p>Yes. Use <strong>Import → Load from GitHub URL</strong> and paste a blob URL (<code>github.com/{owner}/{repo}/blob/{ref}/{path}.md</code>), a raw URL, or a bare repo URL — the default branch and README are resolved automatically. You can also share a direct deep link by appending the GitHub URL after the domain (<code>markdownlab.vercel.app/https://github.com/owner/repo/blob/main/README.md</code>) or as a query (<code>?url=…</code>); the file loads on page open. Relative <code>.md</code> links lazy-fetch on click; images and media resolve to <code>raw.githubusercontent.com</code>. Public repos only.</p>
           </details>
         </div>
 
@@ -845,6 +847,6 @@
   <!-- katex auto-render.min.js omitted — our pipeline extracts $…$ /
        $$…$$ and calls katex.renderToString directly. -->
 
-  <script type="module" src="js/app.js?v=15"></script>
+  <script type="module" src="/js/app.js?v=15"></script>
 </body>
 </html>

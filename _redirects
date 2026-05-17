@@ -1,0 +1,17 @@
+# Cloudflare Pages / Netlify redirects.
+#
+# Pasted GitHub URLs land at /https://github.com/... and we fall through to
+# the SPA so app.js can pick up the embedded URL and load it.
+#
+# Two slash variants per scheme — Netlify's CDN collapses `//` in the request
+# path before matching redirects, so `/https://*` never fires there; Cloudflare
+# Pages does not normalize, so `/https:/*` never fires there. Listing both
+# means the right rule applies on each host, and app.js's URL extractor
+# tolerates either shape.
+/https://* /index.html 200
+/https:/*  /index.html 200
+/http://*  /index.html 200
+/http:/*   /index.html 200
+
+# Catch-all 404 — must come last so the rules above still match first.
+/*         /404.html   404

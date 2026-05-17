@@ -11,7 +11,7 @@
  * activate() purges every cache whose name doesn't match.
  */
 
-const CACHE_VERSION = 'markdownlab-v10';
+const CACHE_VERSION = 'markdownlab-v11';
 
 const SHELL = [
   '/',

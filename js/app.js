@@ -4889,14 +4889,14 @@ function download(data, filename, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// PDF export. Native print() inside an isolated context yields a vector PDF
-// with selectable text. Desktop prints from a hidden iframe; mobile prints
-// from a popup because iOS Safari forwards iframe.print() to the top window.
+// PDF export. Desktop prints from a hidden iframe; mobile prints from a
+// popup since iOS Safari prints the parent when you call iframe.print().
 
 // A4 (210 mm) − 2 × 14 mm margins = 182 mm ≈ 688 px at 96 dpi.
 const PDF_BODY_W_PX = 688;
 const PDF_PREP_TIMEOUT_MS = 45_000;
 const PDF_AUTOCLEANUP_MS = 60_000;
+const PDF_BLOB_REVOKE_MS = 60_000;
 const PDF_MSG_READY = 'mdlab-print-ready';
 const PDF_MSG_ERROR = 'mdlab-pdf-error';
 
@@ -4918,8 +4918,10 @@ function reportPdfError(err, cleanup) {
   try { cleanup?.(); } catch {}
 }
 
-// Open the popup synchronously inside the click handler so iOS keeps the
-// user gesture alive and the pop-up blocker doesn't fire.
+// Mobile path. Open the popup synchronously to keep the user gesture, then
+// navigate it to a blob URL. document.write breaks Android Chrome's print
+// pipeline (Chromium#41411048); a blob URL fires load/DOMContentLoaded
+// correctly so print() sees a complete document.
 function exportPdfMobile() {
   setStatus('busy', 'Building PDF…');
 
@@ -4930,14 +4932,17 @@ function exportPdfMobile() {
     return;
   }
 
+  let blobUrl;
   try {
     const html = buildPrintPdfHtml(preview.innerHTML, baseFilename(), true);
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+    blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    win.location.replace(blobUrl);
+    // Revoking earlier can cancel the popup's navigation.
+    setTimeout(() => URL.revokeObjectURL(blobUrl), PDF_BLOB_REVOKE_MS);
     setStatus('ready', 'Rendered');
-    showToast('Choose "Save as PDF" in the print dialog', 'info');
+    showToast('Opened print preview — tap "Save as PDF" if it does not appear', 'info');
   } catch (err) {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
     reportPdfError(err, () => win.close());
   }
 }
@@ -5020,10 +5025,34 @@ function buildPrintPdfHtml(bodyInnerHtml, title, selfPrint = false) {
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" crossorigin="anonymous">
 <style>
 ${pdfInlineCss()}
+${selfPrint ? `
+.pdf-toolbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.96); backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid #e5e7ec;
+  font: 600 14px/1.2 'Inter', system-ui, -apple-system, sans-serif;
+}
+.pdf-toolbar__btn {
+  padding: 9px 16px; min-height: 40px;
+  border-radius: 8px; border: 1px solid #d0d7de;
+  background: #ffffff; color: #0f172a; cursor: pointer;
+  font: inherit;
+}
+.pdf-toolbar__btn:hover { background: #f6f8fa; }
+.pdf-toolbar__btn:active { transform: translateY(1px); }
+.pdf-toolbar__btn--primary { background: #0d9488; border-color: #0d9488; color: #ffffff; }
+.pdf-toolbar__btn--primary:hover { background: #0f766e; }
+.pdf-toolbar__btn--primary:disabled { opacity: 0.6; cursor: progress; }
+.pdf-toolbar__hint { color: #475569; font-weight: 500; font-size: 13px; }
+article.pdf-body { padding: 16px; }
+` : ''}
 @media print {
   @page { size: A4; margin: 14mm; }
   html, body { margin: 0; padding: 0; }
-  article.pdf-body { width: 100%; max-width: 100%; }
+  .pdf-toolbar { display: none !important; }
+  article.pdf-body { width: 100%; max-width: 100%; padding: 0; }
   .mermaid svg { max-width: 100%; height: auto; page-break-inside: avoid; break-inside: avoid; }
   pre, table, blockquote, .markdown-alert { page-break-inside: avoid; break-inside: avoid; }
   h1, h2, h3, h4, h5, h6 { page-break-after: avoid; break-after: avoid; }
@@ -5031,6 +5060,11 @@ ${pdfInlineCss()}
 </style>
 </head>
 <body>
+${selfPrint ? `<div class="pdf-toolbar" role="toolbar" aria-label="PDF actions">
+  <button type="button" id="mdlab-print-btn" class="pdf-toolbar__btn pdf-toolbar__btn--primary">Save as PDF</button>
+  <button type="button" id="mdlab-close-btn" class="pdf-toolbar__btn">Close</button>
+  <span class="pdf-toolbar__hint" id="mdlab-print-hint">Preparing…</span>
+</div>` : ''}
 <article class="pdf-body" id="pdf-body">${temp.innerHTML}</article>
 <script type="application/json" id="mdlab-pdf-config">${config.replace(/</g, '\\u003c')}</script>
 <script type="module" src="${escapeHtml(printScriptUrl)}"></script>

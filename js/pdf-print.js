@@ -1,10 +1,10 @@
-// Print runtime. Loaded inside the iframe (desktop) or popup (mobile);
-// config arrives via a JSON <script> block to satisfy `script-src 'self'`.
+// Print runtime. Loaded into the iframe (desktop) or popup (mobile).
+// Config travels via a JSON <script> block to keep CSP `script-src 'self'`.
 
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
-const MOBILE_PRINT_DELAY_MS = 300;
 const POPUP_AUTOCLOSE_MS = 60_000;
+const POPUP_AUTOPRINT_DELAY_MS = 600;
 
 const cfg = JSON.parse(document.getElementById('mdlab-pdf-config')?.textContent || '{}');
 const MSG = cfg.msg || { ready: 'mdlab-print-ready', error: 'mdlab-pdf-error' };
@@ -20,6 +20,11 @@ const closeWindowOnce = (() => {
   let closed = false;
   return () => { if (closed) return; closed = true; try { window.close(); } catch {} };
 })();
+
+const waitForWindowLoad = () =>
+  document.readyState === 'complete'
+    ? Promise.resolve()
+    : new Promise((r) => window.addEventListener('load', r, { once: true }));
 
 (async () => {
   try {
@@ -60,22 +65,39 @@ const closeWindowOnce = (() => {
 
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    if (cfg.selfPrint) {
-      // Mobile path. iOS Safari forwards iframe.print() to the top-level window
-      // (that's why the desktop iframe path renders a 1-page PDF here), so we
-      // print from a popup instead. The setTimeout matters: WebKit snapshots
-      // document height once at print(), so fonts/Mermaid/KaTeX must have
-      // painted first or pages 2..N get clipped. The auto-close handles iOS
-      // dismissing the share sheet without firing afterprint.
-      window.addEventListener('afterprint', closeWindowOnce, { once: true });
-      setTimeout(closeWindowOnce, POPUP_AUTOCLOSE_MS);
-      setTimeout(() => {
-        try { window.print(); } catch (err) { report(err); }
-      }, MOBILE_PRINT_DELAY_MS);
-    } else {
-      parent.postMessage({ type: MSG.ready }, '*');
-    }
+    if (cfg.selfPrint) initSelfPrint();
+    else parent.postMessage({ type: MSG.ready }, '*');
   } catch (err) {
     report(err);
+    if (cfg.selfPrint) setHint('Preview ready. Use the print button below to save.');
   }
 })();
+
+// Mobile popup path. Auto-print is gated on window.load — Android Chrome
+// errors with "There was a problem printing the page" if print() runs before
+// the document finishes loading. The button is the fallback user gesture.
+async function initSelfPrint() {
+  document.getElementById('mdlab-print-btn')?.addEventListener('click', () => triggerPrint());
+  document.getElementById('mdlab-close-btn')?.addEventListener('click', closeWindowOnce);
+  window.addEventListener('afterprint', () => setHint('Saved. You can close this tab.'));
+  setTimeout(closeWindowOnce, POPUP_AUTOCLOSE_MS);
+
+  await waitForWindowLoad();
+  setHint('Ready. Tap "Save as PDF" to continue.');
+  setTimeout(() => triggerPrint({ silent: true }), POPUP_AUTOPRINT_DELAY_MS);
+}
+
+function triggerPrint({ silent = false } = {}) {
+  try {
+    setHint('Opening print dialog…');
+    window.print();
+  } catch (err) {
+    if (!silent) report(err);
+    setHint('Could not open the print dialog. Tap "Save as PDF" to retry.');
+  }
+}
+
+function setHint(text) {
+  const el = document.getElementById('mdlab-print-hint');
+  if (el) el.textContent = text;
+}

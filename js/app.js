@@ -4889,23 +4889,62 @@ function download(data, filename, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// PDF export uses a hidden iframe to isolate print CSS, re-render Mermaid
-// against the print layout, and avoid printing the parent app chrome.
-// The browser's native print() produces a true vector PDF with selectable text.
+// PDF export. Native print() inside an isolated context yields a vector PDF
+// with selectable text. Desktop prints from a hidden iframe; mobile prints
+// from a popup because iOS Safari forwards iframe.print() to the top window.
 
 // A4 (210 mm) − 2 × 14 mm margins = 182 mm ≈ 688 px at 96 dpi.
-// If you change @page margin in the print CSS, update this to match.
 const PDF_BODY_W_PX = 688;
-const PDF_PREP_TIMEOUT_MS = 45000;
-const PDF_MSG_ERROR = 'mdlab-pdf-error';
+const PDF_PREP_TIMEOUT_MS = 45_000;
+const PDF_AUTOCLEANUP_MS = 60_000;
 const PDF_MSG_READY = 'mdlab-print-ready';
+const PDF_MSG_ERROR = 'mdlab-pdf-error';
+
+function isMobilePrintPlatform() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod|Android/i.test(ua)) return true;
+  // iPadOS 13+ reports UA as MacIntel.
+  return navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || '');
+}
 
 async function exportPdf() {
+  return isMobilePrintPlatform() ? exportPdfMobile() : exportPdfDesktop();
+}
+
+function reportPdfError(err, cleanup) {
+  console.error('PDF export failed:', err);
+  setStatus('error', 'PDF export failed');
+  showToast(`PDF export failed — ${err?.message || 'see console'}`, 'error');
+  try { cleanup?.(); } catch {}
+}
+
+// Open the popup synchronously inside the click handler so iOS keeps the
+// user gesture alive and the pop-up blocker doesn't fire.
+function exportPdfMobile() {
+  setStatus('busy', 'Building PDF…');
+
+  const win = window.open('', '_blank');
+  if (!win) {
+    setStatus('error', 'PDF export failed');
+    showToast('Allow pop-ups for this site to export PDF', 'error');
+    return;
+  }
+
+  try {
+    const html = buildPrintPdfHtml(preview.innerHTML, baseFilename(), true);
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    setStatus('ready', 'Rendered');
+    showToast('Choose "Save as PDF" in the print dialog', 'info');
+  } catch (err) {
+    reportPdfError(err, () => win.close());
+  }
+}
+
+async function exportPdfDesktop() {
   setStatus('busy', 'Building PDF…');
   showToast('Preparing print preview…', 'info');
-
-  const title = baseFilename();
-  const html = buildPrintPdfHtml(preview.innerHTML, title);
 
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
@@ -4913,51 +4952,45 @@ async function exportPdf() {
   iframe.style.cssText =
     'position:fixed;left:-10000px;top:0;width:794px;height:1123px;' +
     'border:0;visibility:hidden;pointer-events:none;';
-  iframe.srcdoc = html;
+  iframe.srcdoc = buildPrintPdfHtml(preview.innerHTML, baseFilename());
   document.body.appendChild(iframe);
 
-  // Wait for the iframe to signal it's ready (Mermaid rendered, fonts loaded).
-  try {
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        window.removeEventListener('message', onMsg);
-        reject(new Error('PDF prep timed out'));
-      }, PDF_PREP_TIMEOUT_MS);
-      const onMsg = (e) => {
-        if (e.source !== iframe.contentWindow || !e.data) return;
-        if (e.data.type === PDF_MSG_READY) {
-          clearTimeout(timeout);
-          window.removeEventListener('message', onMsg);
-          resolve();
-        } else if (e.data.type === PDF_MSG_ERROR) {
-          clearTimeout(timeout);
-          window.removeEventListener('message', onMsg);
-          reject(new Error(e.data.error || 'unknown'));
-        }
-      };
-      window.addEventListener('message', onMsg);
-    });
+  const removeIframe = () => { try { iframe.remove(); } catch {} };
 
-    // Native print on the iframe yields a true vector PDF with selectable text.
+  try {
+    await waitForIframeReady(iframe);
     const cw = iframe.contentWindow;
-    const cleanup = () => { try { iframe.remove(); } catch {} };
-    cw.addEventListener('afterprint', cleanup, { once: true });
-    // Safety net: if afterprint never fires (e.g. older browsers), remove
-    // after 60 s — long enough for the user to finish saving.
-    setTimeout(cleanup, 60000);
+    cw.addEventListener('afterprint', removeIframe, { once: true });
+    setTimeout(removeIframe, PDF_AUTOCLEANUP_MS);
     cw.print();
     setStatus('ready', 'Rendered');
     showToast('Print dialog opened — choose "Save as PDF"', 'info');
   } catch (err) {
-    console.error('PDF export failed:', err);
-    setStatus('error', 'PDF export failed');
-    statRender.textContent = '\u2014';
-    showToast(`PDF export failed — ${err.message || 'see console'}`, 'error');
-    try { iframe.remove(); } catch {}
+    statRender.textContent = '—';
+    reportPdfError(err, removeIframe);
   }
 }
 
-function buildPrintPdfHtml(bodyInnerHtml, title) {
+function waitForIframeReady(iframe) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      window.removeEventListener('message', onMsg);
+    };
+    const onMsg = (e) => {
+      if (e.source !== iframe.contentWindow || !e.data) return;
+      if (e.data.type === PDF_MSG_READY) { cleanup(); resolve(); }
+      else if (e.data.type === PDF_MSG_ERROR) { cleanup(); reject(new Error(e.data.error || 'unknown')); }
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('PDF prep timed out'));
+    }, PDF_PREP_TIMEOUT_MS);
+    window.addEventListener('message', onMsg);
+  });
+}
+
+function buildPrintPdfHtml(bodyInnerHtml, title, selfPrint = false) {
   const temp = document.createElement('div');
   temp.innerHTML = bodyInnerHtml;
   resetMermaidNodes(temp.querySelectorAll('.mermaid'));
@@ -4973,6 +5006,7 @@ function buildPrintPdfHtml(bodyInnerHtml, title) {
   const config = JSON.stringify({
     themeVars: mermaidThemeVars('light'),
     msg: { ready: PDF_MSG_READY, error: PDF_MSG_ERROR },
+    selfPrint,
   });
 
   return `<!doctype html>
